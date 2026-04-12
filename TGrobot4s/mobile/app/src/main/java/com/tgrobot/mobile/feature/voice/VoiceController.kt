@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -22,7 +23,11 @@ data class VoiceControllerState(
 
 sealed interface VoiceControllerEvent {
     data class FinalText(val text: String) : VoiceControllerEvent
-    data class Error(val message: String) : VoiceControllerEvent
+    data class Error(
+        val message: String,
+        val code: Int,
+        val isRecoverable: Boolean = false,
+    ) : VoiceControllerEvent
 }
 
 class VoiceController(
@@ -63,7 +68,17 @@ class VoiceController(
 
                 override fun onError(error: Int) {
                     _state.value = _state.value.copy(isListening = false, partialText = "")
-                    _events.tryEmit(VoiceControllerEvent.Error(message = mapError(error)))
+                    val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    val message = mapError(error)
+                    Log.w(TAG, "SpeechRecognizer error code=$error message=$message recoverable=$recoverable")
+                    _events.tryEmit(
+                        VoiceControllerEvent.Error(
+                            message = message,
+                            code = error,
+                            isRecoverable = recoverable,
+                        ),
+                    )
                 }
 
                 override fun onResults(results: Bundle?) {
@@ -94,7 +109,13 @@ class VoiceController(
     fun startListening(): Boolean {
         val recognizer = speechRecognizer
         if (recognizer == null) {
-            _events.tryEmit(VoiceControllerEvent.Error("SpeechRecognizer unavailable on this device"))
+            _events.tryEmit(
+                VoiceControllerEvent.Error(
+                    message = "SpeechRecognizer unavailable on this device",
+                    code = -2,
+                    isRecoverable = false,
+                ),
+            )
             return false
         }
         if (_state.value.isListening) {
@@ -104,7 +125,15 @@ class VoiceController(
             recognizer.startListening(createRecognizerIntent())
             true
         }.getOrElse { error ->
-            _events.tryEmit(VoiceControllerEvent.Error("Start voice failed: ${error.message ?: "unknown"}"))
+            val message = "Start voice failed: ${error.message ?: "unknown"}"
+            Log.e(TAG, message, error)
+            _events.tryEmit(
+                VoiceControllerEvent.Error(
+                    message = message,
+                    code = -1,
+                    isRecoverable = false,
+                ),
+            )
             false
         }
     }
@@ -150,5 +179,9 @@ class VoiceController(
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
             else -> "Unknown speech error: $errorCode"
         }
+    }
+
+    private companion object {
+        const val TAG = "VoiceController"
     }
 }

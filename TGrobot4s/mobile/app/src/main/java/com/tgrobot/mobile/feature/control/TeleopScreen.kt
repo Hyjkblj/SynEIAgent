@@ -429,6 +429,12 @@ private fun TopRightHud(state: TeleopUiState, modifier: Modifier = Modifier) {
             }
             state.voiceError?.takeIf { it.isNotBlank() }?.let {
                 Text("VOICE ERROR", color = Color(0xFFFFB74D), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = it,
+                    color = Color(0xFFFFCC80),
+                    fontSize = 10.sp,
+                    maxLines = 2,
+                )
             }
             if (!state.isNetworkAvailable) {
                 Text("NO NETWORK", color = Color(0xFFFF5252), fontSize = 11.sp, fontWeight = FontWeight.Bold)

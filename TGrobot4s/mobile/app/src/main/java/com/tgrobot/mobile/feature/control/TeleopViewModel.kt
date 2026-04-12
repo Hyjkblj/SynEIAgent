@@ -202,8 +202,14 @@ class TeleopViewModel(
             }
 
             is VoiceControllerEvent.Error -> {
-                _uiState.update { it.copy(voiceError = event.message) }
-                appendMessage(UiMessageRole.SYSTEM, "Voice error: ${event.message}")
+                if (event.isRecoverable) {
+                    // Normal recognition edge-cases (silence / no match) should not surface as hard failure.
+                    _uiState.update { it.copy(voiceError = null) }
+                    appendMessage(UiMessageRole.SYSTEM, "Voice notice(${event.code}): ${event.message}")
+                } else {
+                    _uiState.update { it.copy(voiceError = event.message) }
+                    appendMessage(UiMessageRole.SYSTEM, "Voice error(${event.code}): ${event.message}")
+                }
             }
         }
     }
