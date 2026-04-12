@@ -1,9 +1,12 @@
 package com.tgrobot.mobile.feature.voice
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -35,78 +38,75 @@ class VoiceController(
     private val locale: Locale = Locale.CHINA,
 ) {
     private val appContext = context.applicationContext
-    private val speechRecognizer: SpeechRecognizer? = if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
-        SpeechRecognizer.createSpeechRecognizer(appContext)
-    } else {
-        null
-    }
+    private var speechRecognizer: SpeechRecognizer? = null
 
     private val _state = MutableStateFlow(
-        VoiceControllerState(isAvailable = speechRecognizer != null),
+        VoiceControllerState(isAvailable = false),
     )
     val state: StateFlow<VoiceControllerState> = _state.asStateFlow()
 
     private val _events = MutableSharedFlow<VoiceControllerEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<VoiceControllerEvent> = _events.asSharedFlow()
 
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            _state.value = _state.value.copy(isListening = true, partialText = "")
+        }
+
+        override fun onBeginningOfSpeech() = Unit
+
+        override fun onRmsChanged(rmsdB: Float) = Unit
+
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+        override fun onEndOfSpeech() {
+            _state.value = _state.value.copy(isListening = false)
+        }
+
+        override fun onError(error: Int) {
+            _state.value = _state.value.copy(isListening = false, partialText = "")
+            val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            val message = mapError(error)
+            Log.w(TAG, "SpeechRecognizer error code=$error message=$message recoverable=$recoverable")
+            _events.tryEmit(
+                VoiceControllerEvent.Error(
+                    message = message,
+                    code = error,
+                    isRecoverable = recoverable,
+                ),
+            )
+        }
+
+        override fun onResults(results: Bundle?) {
+            _state.value = _state.value.copy(isListening = false, partialText = "")
+            val text = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.trim()
+            if (!text.isNullOrBlank()) {
+                _events.tryEmit(VoiceControllerEvent.FinalText(text))
+            }
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val partial = partialResults
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            _state.value = _state.value.copy(partialText = partial)
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
     init {
-        speechRecognizer?.setRecognitionListener(
-            object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    _state.value = _state.value.copy(isListening = true, partialText = "")
-                }
-
-                override fun onBeginningOfSpeech() = Unit
-
-                override fun onRmsChanged(rmsdB: Float) = Unit
-
-                override fun onBufferReceived(buffer: ByteArray?) = Unit
-
-                override fun onEndOfSpeech() {
-                    _state.value = _state.value.copy(isListening = false)
-                }
-
-                override fun onError(error: Int) {
-                    _state.value = _state.value.copy(isListening = false, partialText = "")
-                    val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH ||
-                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                    val message = mapError(error)
-                    Log.w(TAG, "SpeechRecognizer error code=$error message=$message recoverable=$recoverable")
-                    _events.tryEmit(
-                        VoiceControllerEvent.Error(
-                            message = message,
-                            code = error,
-                            isRecoverable = recoverable,
-                        ),
-                    )
-                }
-
-                override fun onResults(results: Bundle?) {
-                    _state.value = _state.value.copy(isListening = false, partialText = "")
-                    val text = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.trim()
-                    if (!text.isNullOrBlank()) {
-                        _events.tryEmit(VoiceControllerEvent.FinalText(text))
-                    }
-                }
-
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val partial = partialResults
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.trim()
-                        .orEmpty()
-                    _state.value = _state.value.copy(partialText = partial)
-                }
-
-                override fun onEvent(eventType: Int, params: Bundle?) = Unit
-            },
-        )
+        refreshRecognizer()
     }
 
     fun startListening(): Boolean {
+        refreshRecognizer()
         val recognizer = speechRecognizer
         if (recognizer == null) {
             _events.tryEmit(
@@ -150,6 +150,48 @@ class VoiceController(
 
     fun release() {
         speechRecognizer?.destroy()
+        speechRecognizer = null
+        _state.value = _state.value.copy(isAvailable = false, isListening = false, partialText = "")
+    }
+
+    private fun refreshRecognizer() {
+        if (speechRecognizer != null) {
+            _state.value = _state.value.copy(isAvailable = true)
+            return
+        }
+        speechRecognizer = createRecognizer()
+        speechRecognizer?.setRecognitionListener(recognitionListener)
+        _state.value = _state.value.copy(isAvailable = speechRecognizer != null)
+    }
+
+    private fun createRecognizer(): SpeechRecognizer? {
+        val recognizerService = findRecognitionServiceComponent()
+        if (recognizerService == null && !SpeechRecognizer.isRecognitionAvailable(appContext)) {
+            Log.w(TAG, "No recognition service available")
+            return null
+        }
+        return runCatching {
+            if (recognizerService != null) {
+                Log.i(TAG, "Using recognizer service: ${recognizerService.flattenToShortString()}")
+                SpeechRecognizer.createSpeechRecognizer(appContext, recognizerService)
+            } else {
+                SpeechRecognizer.createSpeechRecognizer(appContext)
+            }
+        }.onFailure { error ->
+            Log.e(TAG, "Create SpeechRecognizer failed", error)
+        }.getOrNull()
+    }
+
+    private fun findRecognitionServiceComponent(): ComponentName? {
+        val intent = Intent(RecognitionService.SERVICE_INTERFACE)
+        val services = runCatching {
+            appContext.packageManager.queryIntentServices(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        }.getOrElse {
+            emptyList()
+        }
+
+        val serviceInfo = services.firstOrNull()?.serviceInfo ?: return null
+        return ComponentName(serviceInfo.packageName, serviceInfo.name)
     }
 
     private fun createRecognizerIntent(): Intent {

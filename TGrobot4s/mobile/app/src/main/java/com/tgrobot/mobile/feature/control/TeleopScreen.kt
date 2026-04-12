@@ -250,9 +250,16 @@ private fun DriveScreen(
         ) {
             FilledTonalButton(
                 onClick = onVoiceControlClick,
+                enabled = state.voiceAvailable,
                 shape = RoundedCornerShape(12.dp),
             ) {
-                Text(if (state.isVoiceListening) "Stop Voice" else "Voice")
+                Text(
+                    when {
+                        !state.voiceAvailable -> "Voice N/A"
+                        state.isVoiceListening -> "Stop Voice"
+                        else -> "Voice"
+                    },
+                )
             }
 
             // Chat toggle
@@ -424,6 +431,9 @@ private fun TopRightHud(state: TeleopUiState, modifier: Modifier = Modifier) {
         ) {
             HudRow("Latency", state.latencyMs?.let { "${it}ms" } ?: "--")
             HudRow("Battery", state.batteryPercent?.let { "$it%" } ?: "--")
+            if (!state.voiceAvailable) {
+                Text("VOICE UNAVAILABLE", color = Color(0xFFFFAB91), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
             if (state.isVoiceListening) {
                 Text("VOICE LISTENING", color = Color(0xFF80CBC4), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }

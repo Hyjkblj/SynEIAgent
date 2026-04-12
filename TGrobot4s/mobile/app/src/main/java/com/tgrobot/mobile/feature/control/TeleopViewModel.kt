@@ -174,6 +174,7 @@ class TeleopViewModel(
             voiceController.state.collect { state ->
                 _uiState.update {
                     it.copy(
+                        voiceAvailable = state.isAvailable,
                         isVoiceListening = state.isListening,
                         voicePartialText = state.partialText,
                     )

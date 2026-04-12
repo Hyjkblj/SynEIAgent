@@ -27,6 +27,7 @@ data class TeleopUiState(
     val draftText: String = "",
     val messages: List<UiMessage> = emptyList(),
     val lastCommand: TeleopCommand = TeleopCommand.Zero,
+    val voiceAvailable: Boolean = true,
     val isVoiceListening: Boolean = false,
     val voicePartialText: String = "",
     val lastVoiceText: String = "",
