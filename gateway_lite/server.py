@@ -111,10 +111,19 @@ class GatewayServer:
             chat_id: session.router.state.value
             for chat_id, session in self._sessions.items()
         }
+        peers = {
+            chat_id: {
+                "ice_state": session.pc.iceConnectionState,
+                "connection_state": session.pc.connectionState,
+                "dc_state": getattr(session.dc, "readyState", None),
+            }
+            for chat_id, session in self._sessions.items()
+        }
         payload: dict[str, Any] = {
             "ok": True,
             "sessions": len(self._sessions),
             "states": states,
+            "peers": peers,
             "control": {
                 "deadman_timeout_ms": self.cfg.deadman_timeout_ms,
                 "joystick_max_hz": self.cfg.joystick_max_hz,
@@ -235,6 +244,12 @@ class GatewayServer:
                 return
             session.dc = channel
 
+            @channel.on("close")
+            def on_close() -> None:
+                task = asyncio.create_task(self._close_session(session.chat_id))
+                session.tasks.add(task)
+                task.add_done_callback(session.tasks.discard)
+
             @channel.on("message")
             def on_message(raw: str) -> None:
                 task = asyncio.create_task(self._on_dc_message(session, raw))
@@ -276,9 +291,12 @@ class GatewayServer:
         @pc.on("iceconnectionstatechange")
         async def on_ice_state() -> None:
             if pc.iceConnectionState in ("failed", "closed", "disconnected"):
-                s = self._sessions.pop(session.chat_id, None)
-                if s:
-                    await s.close()
+                await self._close_session(session.chat_id)
+
+        @pc.on("connectionstatechange")
+        async def on_connection_state() -> None:
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                await self._close_session(session.chat_id)
 
     async def _watchdog(self, session: PeerSession) -> None:
         while not session.closed:
@@ -325,6 +343,11 @@ class GatewayServer:
         if cmd.kind == CommandKind.MOTION:
             return await self._ros.motion(motion_number=cmd.motion_number, active=cmd.active)
         return False, "unsupported_command"
+
+    async def _close_session(self, chat_id: str) -> None:
+        s = self._sessions.pop(chat_id, None)
+        if s:
+            await s.close()
 
 
 def _parse_ice_candidate(raw: Any) -> RTCIceCandidate | None:
