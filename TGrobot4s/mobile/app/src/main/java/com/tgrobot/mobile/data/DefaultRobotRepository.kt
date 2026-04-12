@@ -5,6 +5,7 @@ import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
+import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import com.tgrobot.mobile.core.realtime.RealtimeTransport
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,5 +32,9 @@ class DefaultRobotRepository(
 
     override suspend fun sendText(content: String): Boolean {
         return transport.sendText(content)
+    }
+
+    override suspend fun sendVoiceIntent(intent: VoiceIntentPayload): Boolean {
+        return transport.sendVoiceIntent(intent)
     }
 }

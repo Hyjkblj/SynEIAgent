@@ -5,6 +5,7 @@ import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
+import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import org.webrtc.VideoTrack
@@ -18,4 +19,5 @@ interface RobotRepository {
     suspend fun disconnect()
     suspend fun sendControl(command: TeleopCommand, clientTsMs: Long): Boolean
     suspend fun sendText(content: String): Boolean
+    suspend fun sendVoiceIntent(intent: VoiceIntentPayload): Boolean
 }

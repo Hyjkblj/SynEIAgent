@@ -77,6 +77,7 @@ fun TeleopScreen(
     onConnectClick: () -> Unit,
     onDisconnectClick: () -> Unit,
     onEmergencyStop: () -> Unit,
+    onVoiceControlClick: () -> Unit,
     onJoystickInput: (Float, Float) -> Unit,
     onJoystickRelease: () -> Unit,
     onDraftTextChange: (String) -> Unit,
@@ -94,6 +95,7 @@ fun TeleopScreen(
             state = state,
             onDisconnectClick = onDisconnectClick,
             onEmergencyStop = onEmergencyStop,
+            onVoiceControlClick = onVoiceControlClick,
             onJoystickInput = onJoystickInput,
             onJoystickRelease = onJoystickRelease,
             onDraftTextChange = onDraftTextChange,
@@ -103,7 +105,7 @@ fun TeleopScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Connect screen — shown before DataChannel is open
+// Connect screen 闂?shown before DataChannel is open
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -156,11 +158,11 @@ private fun ConnectScreen(
                 // Connection status indicator
                 val statusText = when (state.connectionState) {
                     RobotConnectionState.DISCONNECTED -> "Ready to connect"
-                    RobotConnectionState.CONNECTING_SIGNAL -> "Connecting to signal server…"
-                    RobotConnectionState.SIGNAL_CONNECTED -> "Signal connected, negotiating…"
-                    RobotConnectionState.PEER_CONNECTING -> "Establishing peer connection…"
+                    RobotConnectionState.CONNECTING_SIGNAL -> "Connecting to signal server..."
+                    RobotConnectionState.SIGNAL_CONNECTED -> "Signal connected, negotiating..."
+                    RobotConnectionState.PEER_CONNECTING -> "Establishing peer connection..."
                     RobotConnectionState.DATA_CHANNEL_OPEN -> "Connected"
-                    RobotConnectionState.FAILED -> "Connection failed — check host/port"
+                    RobotConnectionState.FAILED -> "Connection failed - check host/port"
                 }
                 val statusColor = when (state.connectionState) {
                     RobotConnectionState.FAILED -> MaterialTheme.colorScheme.error
@@ -189,7 +191,7 @@ private fun ConnectScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Drive screen — full-screen immersive layout while connected
+// Drive screen 闂?full-screen immersive layout while connected
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -197,6 +199,7 @@ private fun DriveScreen(
     state: TeleopUiState,
     onDisconnectClick: () -> Unit,
     onEmergencyStop: () -> Unit,
+    onVoiceControlClick: () -> Unit,
     onJoystickInput: (Float, Float) -> Unit,
     onJoystickRelease: () -> Unit,
     onDraftTextChange: (String) -> Unit,
@@ -206,10 +209,10 @@ private fun DriveScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        // ── Layer 0: video fills entire screen ──────────────────────────
+        // 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Layer 0: video fills entire screen 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
         VideoBackground(track = state.remoteVideoTrack)
 
-        // ── Layer 1: HUD overlays ────────────────────────────────────────
+        // 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?Layer 1: HUD overlays 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸
 
         // Top-left: connection badge + disconnect
         TopLeftHud(
@@ -245,6 +248,13 @@ private fun DriveScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.End,
         ) {
+            FilledTonalButton(
+                onClick = onVoiceControlClick,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(if (state.isVoiceListening) "Stop Voice" else "Voice")
+            }
+
             // Chat toggle
             FilledTonalButton(
                 onClick = { showChat = !showChat },
@@ -253,7 +263,7 @@ private fun DriveScreen(
                 Text(if (showChat) "Hide Chat" else "Chat")
             }
 
-            // E-Stop — large, red, impossible to miss
+            // E-Stop 闂?large, red, impossible to miss
             Button(
                 onClick = onEmergencyStop,
                 modifier = Modifier.size(width = 120.dp, height = 56.dp),
@@ -268,6 +278,20 @@ private fun DriveScreen(
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 16.sp,
                 )
+            }
+
+            if (state.voicePartialText.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color.Black.copy(alpha = 0.6f),
+                ) {
+                    Text(
+                        text = state.voicePartialText,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                    )
+                }
             }
         }
 
@@ -400,6 +424,12 @@ private fun TopRightHud(state: TeleopUiState, modifier: Modifier = Modifier) {
         ) {
             HudRow("Latency", state.latencyMs?.let { "${it}ms" } ?: "--")
             HudRow("Battery", state.batteryPercent?.let { "$it%" } ?: "--")
+            if (state.isVoiceListening) {
+                Text("VOICE LISTENING", color = Color(0xFF80CBC4), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            state.voiceError?.takeIf { it.isNotBlank() }?.let {
+                Text("VOICE ERROR", color = Color(0xFFFFB74D), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
             if (!state.isNetworkAvailable) {
                 Text("NO NETWORK", color = Color(0xFFFF5252), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
@@ -428,13 +458,13 @@ private fun SpeedReadout(state: TeleopUiState, modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = "↑ ${String.format("%.2f", state.lastCommand.linear)} m/s",
+                text = "L ${String.format("%.2f", state.lastCommand.linear)} m/s",
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = if (isMoving) FontWeight.Bold else FontWeight.Normal,
             )
             Text(
-                text = "↻ ${String.format("%.2f", state.lastCommand.angular)} r/s",
+                text = "A ${String.format("%.2f", state.lastCommand.angular)} r/s",
                 color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = if (isMoving) FontWeight.Bold else FontWeight.Normal,
@@ -495,7 +525,9 @@ private fun ChatOverlay(
                     modifier = Modifier.weight(1f),
                     value = state.draftText,
                     onValueChange = onDraftTextChange,
-                    placeholder = { Text("Send a command…", color = Color.White.copy(alpha = 0.4f), fontSize = 12.sp) },
+                    placeholder = {
+                        Text("Send a command...", color = Color.White.copy(alpha = 0.4f), fontSize = 12.sp)
+                    },
                     singleLine = true,
                 )
                 Button(onClick = onSendText) {
@@ -575,3 +607,4 @@ private fun JoystickView(
         }
     }
 }
+

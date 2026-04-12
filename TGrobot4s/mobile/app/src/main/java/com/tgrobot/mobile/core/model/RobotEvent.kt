@@ -15,9 +15,26 @@ sealed interface RobotEvent {
         val x: Float,
         val y: Float,
         val ts: Long?,
+        val seq: Long?,
+        val reason: String,
+        val source: String?,
+        val requestId: String?,
     ) : RobotEvent
 
     data class ControlAck(
         val ts: Long?,
+        val seq: Long?,
+        val reason: String,
+        val source: String?,
+        val requestId: String?,
+    ) : RobotEvent
+
+    data class GatewayEvent(
+        val name: String,
+        val state: String?,
+        val oldState: String?,
+        val kind: String?,
+        val source: String?,
+        val detail: String?,
     ) : RobotEvent
 }

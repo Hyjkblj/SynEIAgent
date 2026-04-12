@@ -93,6 +93,22 @@ curl http://127.0.0.1:9100/health
 curl http://127.0.0.1:8080/health
 ```
 
+## 视频流适配联调
+
+当机器人侧暂时没有直接对接脚本时，可先用本地摄像头或 RTSP 源验证 `WebRTC -> Mobile` 全链路。
+
+1. 安装视频桥接依赖
+
+```bash
+pip install -r requirements-video-bridge.txt
+```
+
+2. 推送本地摄像头（`--source 0`）或 RTSP（`--source rtsp://...`）到 Gateway
+
+```bash
+python scripts/local_video_bridge.py --gateway http://127.0.0.1:9100 --source 0 --fps 15
+```
+
 ## 独立运行校验
 
 1. 安装依赖并启动服务：
@@ -127,6 +143,23 @@ Gateway -> App：
 {"type":"event","name":"state_changed","state":"JOYSTICK_ACTIVE"}
 {"type":"error","content":"unknown action_id"}
 ```
+
+## 移动端语音动作适配入口
+
+移动端语音动作映射已在 `ActionCatalog` 统一管理，按你的动作体系扩展即可：
+
+- `TGrobot4s/mobile/app/src/main/java/com/tgrobot/mobile/domain/voice/ActionCatalog.kt`
+- `TGrobot4s/mobile/app/src/main/java/com/tgrobot/mobile/domain/voice/VoiceIntentParser.kt`
+
+## 本地语音查询（电量/配置/状态）
+
+移动端支持本地语音业务查询，不依赖云端 LLM：
+- “电量多少 / battery” -> 查询并回显电量字段（若后端未提供则提示 unknown）
+- “配置参数 / config” -> 查询 deadman、joystick 频率、voice 时长等配置
+- “当前状态 / status” -> 查询 sessions、视频帧统计、ROS bridge 健康
+
+本地查询实现：
+- `TGrobot4s/mobile/app/src/main/java/com/tgrobot/mobile/data/local/LocalRobotInfoService.kt`
 
 ## 架构梳理与语音规划文档
 

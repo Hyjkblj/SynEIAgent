@@ -27,6 +27,10 @@ data class TeleopUiState(
     val draftText: String = "",
     val messages: List<UiMessage> = emptyList(),
     val lastCommand: TeleopCommand = TeleopCommand.Zero,
+    val isVoiceListening: Boolean = false,
+    val voicePartialText: String = "",
+    val lastVoiceText: String = "",
+    val voiceError: String? = null,
 ) {
     val isConnected: Boolean
         get() = connectionState == RobotConnectionState.DATA_CHANNEL_OPEN

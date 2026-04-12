@@ -6,6 +6,7 @@ import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
+import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +34,7 @@ import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.VideoTrack
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -76,6 +78,8 @@ class WebRtcRealtimeTransport(
 
     @Volatile
     private var signalingGeneration: Long = 0L
+
+    private val outgoingSeq = AtomicLong(1L)
 
     override suspend fun connect(endpoint: RobotEndpoint, session: RobotSession) {
         val generation = nextSignalingGeneration()
@@ -135,8 +139,11 @@ class WebRtcRealtimeTransport(
     }
 
     override suspend fun sendControl(command: TeleopCommand, clientTsMs: Long): Boolean {
+        val seq = nextOutgoingSeq()
         val payload = JSONObject()
             .put("type", "joystick")
+            .put("seq", seq)
+            .put("request_id", buildRequestId(prefix = "joy", seq = seq))
             .put("x", command.x)
             .put("y", command.y)
             .put("linear", command.linear)
@@ -146,9 +153,28 @@ class WebRtcRealtimeTransport(
     }
 
     override suspend fun sendText(content: String): Boolean {
+        val seq = nextOutgoingSeq()
         val payload = JSONObject()
             .put("type", "text")
+            .put("seq", seq)
+            .put("request_id", buildRequestId(prefix = "text", seq = seq))
             .put("content", content)
+        return sendData(payload.toString())
+    }
+
+    override suspend fun sendVoiceIntent(intent: VoiceIntentPayload): Boolean {
+        val seq = nextOutgoingSeq()
+        val payload = JSONObject()
+            .put("type", "voice_intent")
+            .put("seq", seq)
+            .put("request_id", intent.requestId ?: buildRequestId(prefix = "voice", seq = seq))
+            .put("intent", intent.intent)
+
+        intent.linear?.let { payload.put("linear", it) }
+        intent.angular?.let { payload.put("angular", it) }
+        intent.durationMs?.let { payload.put("duration_ms", it) }
+        intent.actionId?.takeIf { it.isNotBlank() }?.let { payload.put("action_id", it) }
+        intent.motionNumber?.let { payload.put("motion_number", it) }
         return sendData(payload.toString())
     }
 
@@ -478,12 +504,31 @@ class WebRtcRealtimeTransport(
                     x = json.optDouble("x", 0.0).toFloat(),
                     y = json.optDouble("y", 0.0).toFloat(),
                     ts = json.optLong("ts").takeIf { json.has("ts") && !json.isNull("ts") },
+                    seq = json.optLong("seq").takeIf { json.has("seq") && !json.isNull("seq") },
+                    reason = json.optString("reason"),
+                    source = json.optString("source").ifBlank { null },
+                    requestId = json.optString("request_id").ifBlank { null },
                 ),
             )
 
             "ack" -> _events.emit(
                 RobotEvent.ControlAck(
                     ts = json.optLong("ts").takeIf { json.has("ts") && !json.isNull("ts") },
+                    seq = json.optLong("seq").takeIf { json.has("seq") && !json.isNull("seq") },
+                    reason = json.optString("reason"),
+                    source = json.optString("source").ifBlank { null },
+                    requestId = json.optString("request_id").ifBlank { null },
+                ),
+            )
+
+            "event" -> _events.emit(
+                RobotEvent.GatewayEvent(
+                    name = json.optString("name"),
+                    state = json.optString("state").ifBlank { null },
+                    oldState = json.optString("old_state").ifBlank { null },
+                    kind = json.optString("kind").ifBlank { null },
+                    source = json.optString("source").ifBlank { null },
+                    detail = json.optString("detail").ifBlank { null },
                 ),
             )
         }
@@ -513,6 +558,14 @@ class WebRtcRealtimeTransport(
     private fun nextSignalingGeneration(): Long {
         signalingGeneration += 1L
         return signalingGeneration
+    }
+
+    private fun nextOutgoingSeq(): Long {
+        return outgoingSeq.getAndIncrement()
+    }
+
+    private fun buildRequestId(prefix: String, seq: Long): String {
+        return "$prefix-$seq-${System.currentTimeMillis()}"
     }
 
     private fun isCurrentGeneration(generation: Long): Boolean {
