@@ -50,7 +50,7 @@ def _as_str_list(raw: Any, default: list[str]) -> list[str]:
 
 
 def _load_dict(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("Config root must be a JSON object")
