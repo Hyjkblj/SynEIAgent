@@ -1,0 +1,81 @@
+﻿零改机器人打通视频流方案（完整命令版）
+
+约束
+1) 不对机器人做任何改动：不上传脚本、不安装依赖、不改启动项。
+2) nanobot 服务端运行在 Windows 电脑。
+3) 手机、电脑、机器人在同一局域网。
+
+结论
+1) 可行前提：机器人已经对外提供可读取视频源（ROS2 image topic 或 RTSP）。
+2) 不可行情形：机器人既无法被外部 ROS2 订阅、也没有 RTSP/现成视频输出。在“零改机器人”约束下无法打通。
+
+------------------------------------------------------------
+P0（最高优先级）基础连通
+------------------------------------------------------------
+[Windows 电脑]
+1. 启动 nanobot：
+   cd /d D:\Develop\Project\nanobot\nanobot
+   python run_robot_channel.py
+
+2. 查电脑 IP（记为 <PC_IP>）：
+   ipconfig
+
+3. 放行 9100（首次）：
+   Set-NetConnectionProfile -InterfaceAlias "WLAN" -NetworkCategory Private
+   netsh advfirewall firewall add rule name="nanobot_9100_in" dir=in action=allow protocol=TCP localport=9100
+
+4. 确认端口监听：
+   netstat -ano | findstr :9100
+
+------------------------------------------------------------
+P1（首选）电脑侧 ROS2 订阅机器人相机 Topic（零改机器人）
+------------------------------------------------------------
+适用条件：电脑侧已具备 ROS2 + rclpy + cv_bridge 运行环境，并能发现机器人 topic。
+
+[电脑侧 ROS2 终端（Windows ROS2 或 Linux/WSL ROS2）]
+1. 设置与机器人一致的 ROS_DOMAIN_ID（示例 30）：
+   set ROS_DOMAIN_ID=30
+
+2. 验证能看到机器人图像 topic：
+   ros2 topic list | findstr image
+
+3. 运行桥接脚本（在电脑上跑，不在机器人上跑）：
+   python D:\Develop\Project\nanobot\nanobot\docs\tiangong_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --topic /camera/color/image_raw
+
+4. 若你的 shell 是 Linux/WSL，等价命令：
+   export ROS_DOMAIN_ID=30
+   ros2 topic list | grep -i image
+   python /mnt/d/Develop/Project/nanobot/nanobot/docs/tiangong_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --topic /camera/color/image_raw
+
+验收标准：
+- 脚本持续输出 metrics。
+- App 连到 <PC_IP>:9100 后出现视频。
+
+------------------------------------------------------------
+P2（兜底）电脑侧直拉 RTSP（零改机器人）
+------------------------------------------------------------
+适用条件：机器人已提供 RTSP 地址（例如 rtsp://<ROBOT_IP>:8554/xxx）。
+
+[Windows 电脑]
+1. 运行本地视频桥（source 直接填 RTSP URL）：
+   python D:\Develop\Project\nanobot\nanobot\docs\local_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --source rtsp://<ROBOT_IP>:8554/<STREAM_PATH>
+
+验收标准：
+- local_video_bridge 有 pushed 增长。
+- App 连到 <PC_IP>:9100 后出现视频。
+
+------------------------------------------------------------
+P3 手机 App 连接
+------------------------------------------------------------
+Host: <PC_IP>
+Port: 9100
+点击 Connect
+
+------------------------------------------------------------
+失败判定（关键）
+------------------------------------------------------------
+若同时满足以下两点，则在“零改机器人”前提下不可打通：
+1) 电脑侧看不到机器人 ROS2 图像 topic。
+2) 机器人也没有可用 RTSP/现成视频输出地址。
+
+这时必须放开约束，允许在机器人上运行一个桥接进程（例如 tiangong_video_bridge.py）。

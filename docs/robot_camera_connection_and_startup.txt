@@ -1,0 +1,93 @@
+﻿[机器人摄像头连接与启动说明]
+生成时间: 2026-04-05
+
+==============================
+1) 当前连接的是哪一个
+==============================
+结论（按当前项目默认配置）:
+- 当前连接: Color 彩色摄像头
+- 当前视频 topic: /camera/color/image_raw
+
+依据:
+- nanobot/docs/tiangong_video_bridge.py 默认参数为 --topic /camera/color/image_raw
+- 项目内部署示例命令同样使用 /camera/color/image_raw
+
+实时核验（在机器人上执行）:
+1. ps -ef | grep tiangong_video_bridge.py | grep -v grep
+2. 观察进程参数:
+   - 若看到 --topic /xxx/yyy，则当前连接就是该 topic
+   - 若没有 --topic 参数，则默认是 /camera/color/image_raw
+
+
+====================================
+2) 另外两个摄像头如何启动（区分写明）
+====================================
+说明:
+- 这里的“另外两个摄像头”按 Orbbec 三路理解为:
+  A. 左红外 Left IR  -> /camera/left_ir/image_raw
+  B. 右红外 Right IR -> /camera/right_ir/image_raw
+
+- gemini_330_series 默认 left/right IR 是关闭的，先开启再推流。
+
+
+[步骤 0] 先启动 Orbbec，并开启 left/right IR
+在机器人执行:
+
+cd ~/orbbec_camera_ros2
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch orbbec_camera gemini_330_series.launch.py enable_left_ir:=true enable_right_ir:=true
+
+可用以下命令确认话题已出现:
+ros2 topic list | grep -E "^/camera/(left_ir|right_ir)/image_raw$"
+
+
+[A] 启动左红外（Left IR）视频
+1. 先停掉当前视频桥（避免同一端口多进程冲突）:
+   pkill -f tiangong_video_bridge.py
+
+2. 启动左红外推流:
+   python3 /home/<ROBOT_USER>/tiangong_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --topic /camera/left_ir/image_raw
+
+3. 验证左红外有帧率:
+   ros2 topic hz /camera/left_ir/image_raw
+
+
+[B] 启动右红外（Right IR）视频
+1. 先停掉当前视频桥:
+   pkill -f tiangong_video_bridge.py
+
+2. 启动右红外推流:
+   python3 /home/<ROBOT_USER>/tiangong_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --topic /camera/right_ir/image_raw
+
+3. 验证右红外有帧率:
+   ros2 topic hz /camera/right_ir/image_raw
+
+
+==============================
+3) 备注
+==============================
+- 如果你说的“三个摄像头”是 Color / Depth / IR 的口径，
+  则把其中一个 IR 启动命令替换为:
+  --topic /camera/depth/image_raw
+
+- 移动端通常同一时刻显示一路画面；要切换画面，重启 bridge 并改 --topic 最稳妥。
+
+
+========================================
+4) 能否实现另外两个摄像头视频流（当前能力）
+========================================
+结论:
+- 能实现“另外两个摄像头的视频流接入”（Left IR / Right IR），方式是切换 bridge 的 --topic。
+- 当前不支持“同一个移动端会话里三路并行独立视频窗口”。
+
+原因（当前代码行为）:
+- tiangong_video_bridge.py 单进程只订阅一个 topic（单个 --topic 参数）。
+- nanobot 的 /push_frame 入口是单路帧入口，RobotChannel 内部是共享的单个 video track。
+- 如果同时起多个 bridge 往同一个 /push_frame 推送，不会形成多路窗口，只会把帧混在同一路里（不推荐）。
+
+当前可执行方案:
+1. 单路切换（推荐）:
+   - 停旧 bridge，改 --topic 为 /camera/left_ir/image_raw 或 /camera/right_ir/image_raw 重启。
+2. 若要真正三路并行:
+   - 需要代码改造（多路 push 端点 + 多个 VideoTrack + 客户端多视频渲染）。

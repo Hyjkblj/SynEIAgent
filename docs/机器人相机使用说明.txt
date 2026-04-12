@@ -1,0 +1,191 @@
+﻿机器人相机使用说明
+
+版本: 2026-04-05
+适用环境: nanobot + Orbbec 三位置相机（head/waist/back）
+
+====================================================
+0. 目标
+====================================================
+本文档用于完成以下操作:
+1) 启动 nanobot 服务端（PC）
+2) 在机器人上启动三位置相机服务
+3) 在机器人上启动视频桥接服务
+4) 在不重启 nanobot 的情况下切换相机画面（head/waist/back）
+
+
+====================================================
+1. 网络与前置检查
+====================================================
+1) 确保 PC 与机器人在同一局域网。
+2) 确保 PC 端 nanobot robot channel 监听端口为 9100。
+3) 确保机器人能访问 PC 的 9100 端口。
+
+机器人执行:
+curl -v http://192.168.1.102:9100/health
+
+返回 HTTP 200 即网络通。
+
+
+====================================================
+2. PC 端启动 nanobot 服务端
+====================================================
+2.1 配置检查（PC）
+确认 ~/.nanobot/config.json 中 robot channel 至少包含:
+{
+  "channels": {
+    "robot": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 9100,
+      "video_enabled": true,
+      "control_mode": "kernel"
+    }
+  }
+}
+
+2.2 启动（PC）
+建议命令:
+nanobot gateway
+
+如需指定配置:
+nanobot gateway --config ~/.nanobot/config.json
+
+2.3 健康检查（PC 或机器人）
+curl -s http://192.168.1.102:9100/health
+
+说明:
+- sessions: 当前移动端 WebRTC 会话数
+- video.frames_pushed: 收到的视频帧数
+- video.frames_sent: 发送到移动端的视频帧数
+
+
+====================================================
+3. 机器人端启动三位置相机驱动
+====================================================
+使用终端 A（保持运行，不要退出）:
+
+source /opt/ros/humble/setup.bash
+source /home/ota_ws/orin_llm/orbbec_camera/OrbbecCamera-Orin_ros2_tg2.0-plus_v2.0.2_20250717_222400/install/setup.bash
+
+# 启动三相机（back/waist/head）
+ros2 launch orbbec_camera slam_330.launch.py
+
+slam_330.launch.py 默认命名空间:
+- ob_camera_back
+- ob_camera_waist
+- ob_camera_head
+
+可用话题检查（另开终端执行）:
+source /opt/ros/humble/setup.bash
+source /home/ota_ws/orin_llm/orbbec_camera/OrbbecCamera-Orin_ros2_tg2.0-plus_v2.0.2_20250717_222400/install/setup.bash
+ros2 topic list | grep -E "^/ob_camera_(head|waist|back)/color/image_raw$"
+
+
+====================================================
+4. 机器人端启动视频桥接（推流到 nanobot）
+====================================================
+使用终端 B:
+
+4.1 停掉旧桥接进程（如有）
+pkill -f tiangong_video_bridge.py
+
+4.2 启动（示例先用 head）
+nohup python3 /home/hwy/tiangong_video_bridge.py \
+  --nanobot http://192.168.1.102:9100 \
+  --fps 15 \
+  --topic /ob_camera_head/color/image_raw \
+  > /tmp/tiangong_video_bridge.log 2>&1 &
+
+4.3 日志检查
+tail -n 30 /tmp/tiangong_video_bridge.log
+
+4.4 nanobot 状态检查
+curl -s http://192.168.1.102:9100/health
+
+
+====================================================
+5. 切换三位置相机（核心操作）
+====================================================
+推荐在终端 B 定义切换函数:
+
+switch_cam () {
+  TOPIC="$1"
+  pkill -f tiangong_video_bridge.py
+  nohup python3 /home/hwy/tiangong_video_bridge.py \
+    --nanobot http://192.168.1.102:9100 \
+    --fps 15 \
+    --topic "$TOPIC" \
+    > /tmp/tiangong_video_bridge.log 2>&1 &
+  sleep 1
+  echo "[switch] now topic=$TOPIC"
+  tail -n 8 /tmp/tiangong_video_bridge.log
+  curl -s http://192.168.1.102:9100/health
+}
+
+5.1 切到头部相机
+switch_cam /ob_camera_head/color/image_raw
+
+5.2 切到腰部相机
+switch_cam /ob_camera_waist/color/image_raw
+
+5.3 切到背部相机
+switch_cam /ob_camera_back/color/image_raw
+
+说明:
+- 当前架构是“单路视频流切换”，一次只推一路。
+- 切换本质是重启 bridge 并更换 --topic。
+
+
+====================================================
+6. 移动端连接与验证
+====================================================
+1) 移动端连接:
+ws://192.168.1.102:9100/signal
+
+2) 判断是否成功:
+- health 中 sessions 从 0 变成 1
+- video.frames_sent 持续增长
+
+常见状态解释:
+- frames_pushed 增长, frames_sent=0, sessions=0:
+  说明桥接在推帧，但移动端未建立视频会话（正常）。
+
+
+====================================================
+7. 常见故障排查
+====================================================
+问题 1: 切换后黑屏
+处理:
+1) 检查当前 bridge topic 是否正确:
+   ps -ef | grep tiangong_video_bridge.py | grep -v grep
+2) 检查该 topic 是否存在:
+   ros2 topic list | grep /ob_camera_
+3) 检查该 topic 是否有帧率:
+   ros2 topic hz /ob_camera_head/color/image_raw
+
+问题 2: 找不到 ob_camera_* 话题
+处理:
+1) 确认终端 A 的 slam_330.launch.py 在运行
+2) 重新 source:
+   source /opt/ros/humble/setup.bash
+   source /home/ota_ws/orin_llm/orbbec_camera/OrbbecCamera-Orin_ros2_tg2.0-plus_v2.0.2_20250717_222400/install/setup.bash
+
+问题 3: /health 正常但手机没画面
+处理:
+1) 先看 sessions 是否为 1
+2) 手机端断开重连
+3) 切换回 head 再试:
+   switch_cam /ob_camera_head/color/image_raw
+
+
+====================================================
+8. 停止命令
+====================================================
+停止 bridge:
+pkill -f tiangong_video_bridge.py
+
+停止三相机:
+在终端 A 按 Ctrl+C
+
+停止 nanobot:
+在 PC 端运行 nanobot 的终端按 Ctrl+C

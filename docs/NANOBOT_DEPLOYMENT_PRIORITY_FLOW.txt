@@ -1,0 +1,143 @@
+﻿Nanobot Windows-Robot-Mobile 联调流程（按优先级）
+
+目标架构（最稳路径）
+1) Windows 电脑运行 nanobot 服务端（含 WebRTC）。
+2) 机器人仅运行 /home/<ROBOT_USER>/tiangong_video_bridge.py，将 ROS2 相机帧 HTTP 推送到电脑。
+3) 手机 App 只连电脑的 9100 端口。
+
+------------------------------------------------------------
+P0（最高优先级）：网络与服务基础就绪
+------------------------------------------------------------
+[Windows 电脑]
+1. 切到项目并启动服务端：
+   cd /d D:\Develop\Project\nanobot\nanobot
+   python run_robot_channel.py
+
+2. 查看本机局域网 IPv4（记为 <PC_IP>）：
+   ipconfig
+
+3. 放行防火墙（仅首次需要）：
+   Set-NetConnectionProfile -InterfaceAlias "WLAN" -NetworkCategory Private
+   netsh advfirewall firewall add rule name="nanobot_9100_in" dir=in action=allow protocol=TCP localport=9100
+
+4. 确认 9100 在监听：
+   netstat -ano | findstr :9100
+
+[机器人 Linux]
+5. 确认可达电脑端口：
+   ping -c 4 <PC_IP>
+   nc -zv <PC_IP> 9100
+
+验收标准：
+- 电脑端 9100 监听成功。
+- 机器人到 <PC_IP>:9100 连通。
+
+------------------------------------------------------------
+P1：视频链路打通（机器人推帧 -> 电脑 nanobot -> App）
+------------------------------------------------------------
+[机器人 Linux]
+0. 路径约定（完整路径）：
+   Windows 源文件：D:\Develop\Project\nanobot\nanobot\tiangong_video_bridge.py
+   机器人目标文件：/home/<ROBOT_USER>/tiangong_video_bridge.py
+
+1. 上传脚本（在 Windows 上执行，若你已上传可跳过）：
+   scp D:\Develop\Project\nanobot\nanobot\tiangong_video_bridge.py <ROBOT_USER>@<ROBOT_IP>:/home/<ROBOT_USER>/tiangong_video_bridge.py
+
+2. 确认相机话题：
+   ros2 topic list | grep -i image
+
+3. 启动推帧（PowerShell 前台版，把 topic 改成你的真实彩色图像话题）：
+   $ROBOT_USER = "<ROBOT_USER>"
+   $ROBOT_IP   = "<ROBOT_IP>"
+   $PC_IP      = "<PC_IP>"
+   $TOPIC      = "/camera/color/image_raw"
+   ssh "$ROBOT_USER@$ROBOT_IP" "python3 /home/$ROBOT_USER/tiangong_video_bridge.py --nanobot http://${PC_IP}:9100 --fps 15 --topic $TOPIC"
+
+4. 后台启动版本（PowerShell 可选）：
+   $ROBOT_USER = "<ROBOT_USER>"
+   $ROBOT_IP   = "<ROBOT_IP>"
+   $PC_IP      = "<PC_IP>"
+   $TOPIC      = "/camera/color/image_raw"
+   ssh "$ROBOT_USER@$ROBOT_IP" "nohup python3 /home/$ROBOT_USER/tiangong_video_bridge.py --nanobot http://${PC_IP}:9100 --fps 15 --topic $TOPIC > /tmp/tiangong_video_bridge.log 2>&1 < /dev/null &"
+   ssh "$ROBOT_USER@$ROBOT_IP" "tail -f /tmp/tiangong_video_bridge.log"
+
+[手机 App]
+5. 填写：
+   Host: <PC_IP>
+   Port: 9100
+   点击 Connect
+
+验收标准：
+- App 建立连接成功。
+- App 能看到实时视频（服务端日志出现 WebRTC answer/ICE/DataChannel open，且有连续帧）。
+
+------------------------------------------------------------
+P2：控制链路打通（摇杆 -> nanobot -> ROS2 /cmd_vel）
+------------------------------------------------------------
+前提：电脑与机器人在同一 ROS2 网络，且 ROS_DOMAIN_ID 一致。
+
+[机器人 Linux]
+1. 查看并确认 ROS_DOMAIN_ID：
+   echo $ROS_DOMAIN_ID
+
+2. 监听速度指令：
+   ros2 topic echo /cmd_vel
+
+[Windows 电脑（若本机安装 ROS2）]
+3. 临时设置同一个域（示例 30）：
+   set ROS_DOMAIN_ID=30
+
+4. 验证能向机器人发速度（手工烟测）：
+   ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.2, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 5
+
+5. 急停：
+   ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
+
+验收标准：
+- 机器人侧能看到 /cmd_vel。
+- 摇杆前后左右与松手急停（deadman）行为正确。
+
+------------------------------------------------------------
+P3：稳定性回归（高频控制 + ACK/超时停）
+------------------------------------------------------------
+1. 在 App 连续 5~10 分钟摇杆操作（包含快速方向切换、松手、断网重连）。
+2. 同时观察：
+   - nanobot 服务端日志：ACK 回环正常、无并发冲突异常。
+   - 机器人侧 /cmd_vel：无长时间“卡住速度”。
+3. 做断网恢复测试：
+   - 断开 App 网络 5~10 秒再恢复。
+   - 验证超时停触发，恢复后可重新控制。
+
+验收标准：
+- 无 crash。
+- 超时停可靠触发。
+- 重连后控制恢复正常。
+
+------------------------------------------------------------
+P4：一键运维命令（常用）
+------------------------------------------------------------
+[Windows 电脑]
+1. 启动 nanobot：
+   cd /d D:\Develop\Project\nanobot\nanobot && python run_robot_channel.py
+
+2. 查 9100 监听：
+   netstat -ano | findstr :9100
+
+[机器人 Linux]
+3. 查 bridge 进程：
+   ps -ef | grep tiangong_video_bridge.py
+
+4. 停止 bridge：
+   pkill -f tiangong_video_bridge.py
+
+5. 重启 bridge：
+   python3 /home/<ROBOT_USER>/tiangong_video_bridge.py --nanobot http://<PC_IP>:9100 --fps 15 --topic /camera/color/image_raw
+
+------------------------------------------------------------
+最终验收清单（交付前）
+------------------------------------------------------------
+1) App 可稳定连接 <PC_IP>:9100。
+2) 视频连续显示（无长时间黑屏）。
+3) 摇杆四向控制正确，松手急停必达。
+4) ACK 回环与超时停在高频控制下无并发冲突。
+5) 断网与重连场景可恢复。

@@ -1,0 +1,38 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+config.json
+*.log
+
+# Python cache / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Android / Gradle
+**/.gradle/
+**/build/
+**/local.properties
+*.iml
+*.apk
+*.aab
+TGrobot4s/mobile/.gradle-home/
+
+# ROS / simulation local artifacts
+**/install/
+**/log/
+**/cmake-build-*/
+TGrobot4s/robot/

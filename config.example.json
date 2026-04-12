@@ -1,0 +1,20 @@
+﻿{
+  "host": "0.0.0.0",
+  "port": 9100,
+  "allow_from": ["*"],
+  "datachannel_label": "control",
+  "video_enabled": true,
+  "video_push_token": "",
+  "deadman_timeout_ms": 250,
+  "joystick_max_hz": 20,
+  "max_linear": 0.6,
+  "max_angular": 1.2,
+  "voice_max_duration_ms": 1000,
+  "voice_priority": 60,
+  "joystick_priority": 80,
+  "ros_bridge": {
+    "mode": "http",
+    "base_url": "http://127.0.0.1:8080",
+    "timeout_s": 0.8
+  }
+}

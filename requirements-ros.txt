@@ -1,0 +1,4 @@
+﻿# ROS runtime dependencies are provided by your ROS2 environment.
+# Example (Ubuntu + Humble):
+#   sudo apt install ros-humble-rclpy ros-humble-geometry-msgs
+# hric_msgs comes from your robot SDK workspace.
