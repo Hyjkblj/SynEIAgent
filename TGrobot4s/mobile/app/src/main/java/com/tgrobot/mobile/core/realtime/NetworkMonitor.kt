@@ -46,6 +46,11 @@ class AndroidNetworkMonitor(
     private fun isCurrentlyOnline(): Boolean {
         val active = connectivityManager.activeNetwork ?: return false
         val caps = connectivityManager.getNetworkCapabilities(active) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        // Treat any active transport as online so LAN-only robot networks are not misclassified.
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)
     }
 }

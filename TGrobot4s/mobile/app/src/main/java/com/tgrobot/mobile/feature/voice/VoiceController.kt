@@ -132,6 +132,8 @@ class VoiceController(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            // Prefer on-device recognition when speech packs are available.
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
     }
 
@@ -140,11 +142,11 @@ class VoiceController(
             SpeechRecognizer.ERROR_AUDIO -> "Audio capture error"
             SpeechRecognizer.ERROR_CLIENT -> "Client error"
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission denied"
-            SpeechRecognizer.ERROR_NETWORK -> "Network error"
-            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+            SpeechRecognizer.ERROR_NETWORK -> "Network error (internet or offline speech pack required)"
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout (check internet/offline speech pack)"
             SpeechRecognizer.ERROR_NO_MATCH -> "No matching speech recognized"
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy"
-            SpeechRecognizer.ERROR_SERVER -> "Server error"
+            SpeechRecognizer.ERROR_SERVER -> "Speech server error (try internet or offline speech pack)"
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout"
             else -> "Unknown speech error: $errorCode"
         }

@@ -303,6 +303,11 @@ class TeleopViewModel(
             )
             return
         }
+        _uiState.update { current ->
+            current.copy(
+                batteryPercent = snapshot.batteryPercent ?: current.batteryPercent,
+            )
+        }
 
         when (query) {
             "battery" -> {
