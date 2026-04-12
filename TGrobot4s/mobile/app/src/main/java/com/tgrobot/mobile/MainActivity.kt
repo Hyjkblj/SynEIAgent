@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
     private val repository by lazy { DefaultRobotRepository(transport) }
     private val networkMonitor by lazy { AndroidNetworkMonitor(applicationContext) }
     private val controlManager by lazy { ControlManager() }
-    private val voiceController by lazy { VoiceController(applicationContext) }
+    private val voiceController by lazy { VoiceController(this) }
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
     private val viewModelFactory by lazy {

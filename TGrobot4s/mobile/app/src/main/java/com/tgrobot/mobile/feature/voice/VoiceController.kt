@@ -1,12 +1,9 @@
 package com.tgrobot.mobile.feature.voice
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
-import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -37,6 +34,7 @@ class VoiceController(
     context: Context,
     private val locale: Locale = Locale.CHINA,
 ) {
+    private val recognizerContext = context
     private val appContext = context.applicationContext
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -165,33 +163,16 @@ class VoiceController(
     }
 
     private fun createRecognizer(): SpeechRecognizer? {
-        val recognizerService = findRecognitionServiceComponent()
-        if (recognizerService == null && !SpeechRecognizer.isRecognitionAvailable(appContext)) {
+        if (!SpeechRecognizer.isRecognitionAvailable(recognizerContext)) {
             Log.w(TAG, "No recognition service available")
             return null
         }
         return runCatching {
-            if (recognizerService != null) {
-                Log.i(TAG, "Using recognizer service: ${recognizerService.flattenToShortString()}")
-                SpeechRecognizer.createSpeechRecognizer(appContext, recognizerService)
-            } else {
-                SpeechRecognizer.createSpeechRecognizer(appContext)
-            }
+            // Use system default recognizer to avoid vendor-specific service incompatibilities.
+            SpeechRecognizer.createSpeechRecognizer(recognizerContext)
         }.onFailure { error ->
             Log.e(TAG, "Create SpeechRecognizer failed", error)
         }.getOrNull()
-    }
-
-    private fun findRecognitionServiceComponent(): ComponentName? {
-        val intent = Intent(RecognitionService.SERVICE_INTERFACE)
-        val services = runCatching {
-            appContext.packageManager.queryIntentServices(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        }.getOrElse {
-            emptyList()
-        }
-
-        val serviceInfo = services.firstOrNull()?.serviceInfo ?: return null
-        return ComponentName(serviceInfo.packageName, serviceInfo.name)
     }
 
     private fun createRecognizerIntent(): Intent {
@@ -203,6 +184,7 @@ class VoiceController(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
             // Prefer on-device recognition when speech packs are available.
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
