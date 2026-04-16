@@ -5,35 +5,34 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.tgrobot.mobile.core.model.RobotConnectionState
-import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
-import com.tgrobot.mobile.core.model.TeleopCommand
-import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import com.tgrobot.mobile.core.realtime.NetworkMonitor
-import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.message.UiMessageRole
-import com.tgrobot.mobile.domain.voice.VoiceIntentCommand
-import com.tgrobot.mobile.domain.voice.VoiceIntentParser
+import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
+import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
+import com.tgrobot.mobile.domain.usecase.ProcessVoiceIntentUseCase
+import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
+import com.tgrobot.mobile.domain.usecase.VoiceIntentResult
 import com.tgrobot.mobile.feature.voice.VoiceController
 import com.tgrobot.mobile.feature.voice.VoiceControllerEvent
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 class TeleopViewModel(
-    private val repository: RobotClient,
+    private val connectUseCase: ConnectRobotUseCase,
+    private val disconnectUseCase: DisconnectRobotUseCase,
+    private val sendControlUseCase: SendControlCommandUseCase,
+    private val processVoiceUseCase: ProcessVoiceIntentUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
     private val voiceController: VoiceController,
-    private val voiceIntentParser: VoiceIntentParser,
     private val localRobotInfoService: LocalRobotInfoService,
     private val messageStore: MessageStore = MessageStore(),
 ) : ViewModel() {
@@ -65,33 +64,32 @@ class TeleopViewModel(
     }
 
     fun connect() {
-        val endpoint = buildEndpoint() ?: run {
-            appendMessage(UiMessageRole.SYSTEM, "Invalid host or port.")
-            return
-        }
-
-        session = RobotSession.create()
         viewModelScope.launch {
-            repository.connect(endpoint, session)
-            appendMessage(UiMessageRole.SYSTEM, "Session ${session.chatId.take(8)} connected.")
+            val result = connectUseCase(_uiState.value.host, _uiState.value.port)
+            result.fold(
+                onSuccess = { newSession ->
+                    session = newSession
+                    messageStore.addSystemMessage("Session ${session.chatId.take(8)} connected.")
+                },
+                onFailure = { error ->
+                    messageStore.addSystemMessage(error.message ?: "Connection failed.")
+                },
+            )
         }
     }
 
     fun disconnect() {
         viewModelScope.launch {
-            voiceController.cancelListening()
-            repository.disconnect()
-            controlEngine.reset()
-            controlEngine.stopControlLoop()
+            disconnectUseCase()
         }
     }
 
     fun emergencyStop() {
         viewModelScope.launch {
-            val now = SystemClock.elapsedRealtime()
-            val command = controlEngine.emergencyStop(now)
-            sendControlCommand(command, now, allowDuringVoiceWindow = true)
-            appendMessage(UiMessageRole.SYSTEM, "Emergency stop triggered.")
+            val success = sendControlUseCase.emergencyStop()
+            if (success) {
+                messageStore.addSystemMessage("Emergency stop triggered.")
+            }
         }
     }
 
@@ -100,14 +98,12 @@ class TeleopViewModel(
         if (_uiState.value.isVoiceListening || now < voiceExclusiveUntilMs) {
             return
         }
-        controlEngine.updateInput(x = x, y = y)
+        sendControlUseCase.updateJoystickInput(x = x, y = y)
     }
 
     fun onJoystickRelease() {
         viewModelScope.launch {
-            val now = SystemClock.elapsedRealtime()
-            val command = controlEngine.release(now)
-            sendControlCommand(command, now, allowDuringVoiceWindow = true)
+            sendControlUseCase.releaseJoystick()
         }
     }
 
@@ -118,13 +114,13 @@ class TeleopViewModel(
             return
         }
         if (!voiceController.startListening()) {
-            appendMessage(UiMessageRole.SYSTEM, "Voice start failed.")
+            messageStore.addSystemMessage("Voice start failed.")
         }
     }
 
     fun onVoicePermissionDenied() {
         _uiState.update { it.copy(voiceError = "Microphone permission denied") }
-        appendMessage(UiMessageRole.SYSTEM, "Microphone permission denied.")
+        messageStore.addSystemMessage("Microphone permission denied.")
     }
 
     fun sendText() {
@@ -132,22 +128,23 @@ class TeleopViewModel(
         if (text.isBlank()) return
 
         _uiState.update { it.copy(draftText = "") }
-        appendMessage(UiMessageRole.USER, text)
+        messageStore.addUserMessage(text)
 
         viewModelScope.launch {
-            if (!repository.sendText(text)) {
-                appendMessage(UiMessageRole.SYSTEM, "Text send failed: DataChannel is not open.")
+            val result = processVoiceUseCase(text)
+            if (result is VoiceIntentResult.Failed) {
+                messageStore.addSystemMessage(result.message)
             }
         }
     }
 
     private fun observeRepository() {
         viewModelScope.launch {
-            repository.connectionState.collect { state ->
+            connectUseCase.robotClient.connectionState.collect { state ->
                 _uiState.update { it.copy(connectionState = state) }
                 if (state == RobotConnectionState.DATA_CHANNEL_OPEN) {
                     controlEngine.startControlLoop(tickMs = CONTROL_TICK_MS) { command, now ->
-                        sendControlCommand(command, now, allowDuringVoiceWindow = false)
+                        sendControlUseCase.sendCommand(command, now)
                     }
                 } else {
                     controlEngine.stopControlLoop()
@@ -156,13 +153,13 @@ class TeleopViewModel(
         }
 
         viewModelScope.launch {
-            repository.remoteVideoTrack.collect { track ->
+            connectUseCase.robotClient.remoteVideoTrack.collect { track ->
                 _uiState.update { it.copy(remoteVideoTrack = track) }
             }
         }
 
         viewModelScope.launch {
-            repository.events.collect(::handleRobotEvent)
+            connectUseCase.robotClient.events.collect(::handleRobotEvent)
         }
     }
 
@@ -219,83 +216,63 @@ class TeleopViewModel(
                         voiceError = null,
                     )
                 }
-                appendMessage(UiMessageRole.USER, "Voice: $text")
+                messageStore.addUserMessage("Voice: $text")
                 dispatchVoiceText(text)
             }
 
             is VoiceControllerEvent.Error -> {
                 if (event.isRecoverable) {
-                    // Normal recognition edge-cases (silence / no match) should not surface as hard failure.
                     _uiState.update { it.copy(voiceError = null) }
-                    appendMessage(UiMessageRole.SYSTEM, "Voice notice(${event.code}): ${event.message}")
+                    messageStore.addSystemMessage("Voice notice(${event.code}): ${event.message}")
                 } else {
                     _uiState.update { it.copy(voiceError = event.message) }
-                    appendMessage(UiMessageRole.SYSTEM, "Voice error(${event.code}): ${event.message}")
+                    messageStore.addSystemMessage("Voice error(${event.code}): ${event.message}")
                 }
             }
         }
     }
 
     private suspend fun dispatchVoiceText(text: String) {
-        when (val intent = voiceIntentParser.parse(text)) {
-            is VoiceIntentCommand.Move -> {
-                preemptJoystickForVoice(windowMs = intent.durationMs.toLong() + VOICE_WINDOW_PADDING_MS)
-                sendVoiceIntent(
-                    payload = VoiceIntentPayload(
-                        intent = "move",
-                        linear = intent.linear,
-                        angular = intent.angular,
-                        durationMs = intent.durationMs,
-                    ),
-                    describe = "move linear=${intent.linear}, angular=${intent.angular}, ${intent.durationMs}ms",
+        val result = processVoiceUseCase(text)
+        
+        // 设置语音独占窗口
+        val windowMs = processVoiceUseCase.getVoiceExclusiveWindowMs(result)
+        if (windowMs > 0) {
+            preemptJoystickForVoice(windowMs)
+        }
+
+        // 处理结果
+        when (result) {
+            is VoiceIntentResult.Move -> {
+                messageStore.addSystemMessage(
+                    "Voice command sent: move linear=${result.linear}, angular=${result.angular}, ${result.durationMs}ms"
                 )
             }
-
-            is VoiceIntentCommand.Action -> {
-                preemptJoystickForVoice(windowMs = VOICE_ACTION_WINDOW_MS)
-                sendVoiceIntent(
-                    payload = VoiceIntentPayload(
-                        intent = "action",
-                        actionId = intent.actionId,
-                        motionNumber = intent.motionNumber,
-                    ),
-                    describe = "action ${intent.actionId} (motion=${intent.motionNumber})",
+            is VoiceIntentResult.Action -> {
+                messageStore.addSystemMessage(
+                    "Voice command sent: action ${result.actionId} (motion=${result.motionNumber})"
                 )
             }
-
-            VoiceIntentCommand.Stop -> {
-                preemptJoystickForVoice(windowMs = VOICE_STOP_WINDOW_MS)
-                sendVoiceIntent(
-                    payload = VoiceIntentPayload(intent = "stop"),
-                    describe = "stop",
-                )
+            is VoiceIntentResult.Stop -> {
+                messageStore.addSystemMessage("Voice command sent: stop")
             }
-
-            VoiceIntentCommand.ResetEmergency -> {
-                sendVoiceIntent(
-                    payload = VoiceIntentPayload(intent = "reset_emergency"),
-                    describe = "reset emergency",
-                )
+            is VoiceIntentResult.ResetEmergency -> {
+                messageStore.addSystemMessage("Voice command sent: reset emergency")
             }
-
-            VoiceIntentCommand.QueryBattery -> {
+            is VoiceIntentResult.QueryBattery -> {
                 replyLocalRobotInfo(query = "battery")
             }
-
-            VoiceIntentCommand.QueryConfig -> {
+            is VoiceIntentResult.QueryConfig -> {
                 replyLocalRobotInfo(query = "config")
             }
-
-            VoiceIntentCommand.QueryStatus -> {
+            is VoiceIntentResult.QueryStatus -> {
                 replyLocalRobotInfo(query = "status")
             }
-
-            is VoiceIntentCommand.Unknown -> {
-                if (!repository.sendText(intent.text)) {
-                    appendMessage(UiMessageRole.SYSTEM, "Voice text fallback send failed.")
-                } else {
-                    appendMessage(UiMessageRole.SYSTEM, "Voice text forwarded as raw text.")
-                }
+            is VoiceIntentResult.Unknown -> {
+                messageStore.addSystemMessage("Voice text forwarded as raw text.")
+            }
+            is VoiceIntentResult.Failed -> {
+                messageStore.addSystemMessage(result.message)
             }
         }
     }
@@ -303,31 +280,20 @@ class TeleopViewModel(
     private suspend fun preemptJoystickForVoice(windowMs: Long) {
         val now = SystemClock.elapsedRealtime()
         voiceExclusiveUntilMs = maxOf(voiceExclusiveUntilMs, now + windowMs)
-        val stopCommand = controlEngine.release(now)
-        sendControlCommand(stopCommand, now, allowDuringVoiceWindow = true)
-    }
-
-    private suspend fun sendVoiceIntent(payload: VoiceIntentPayload, describe: String) {
-        val sent = repository.sendVoiceIntent(payload)
-        if (!sent) {
-            appendMessage(UiMessageRole.SYSTEM, "Voice command send failed: $describe")
-            return
-        }
-        appendMessage(UiMessageRole.SYSTEM, "Voice command sent: $describe")
+        sendControlUseCase.releaseJoystick()
     }
 
     private suspend fun replyLocalRobotInfo(query: String) {
-        val endpoint = buildEndpoint()
+        val endpoint = connectUseCase.buildEndpoint(_uiState.value.host, _uiState.value.port)
         if (endpoint == null) {
-            appendMessage(UiMessageRole.SYSTEM, "Cannot query robot info: invalid host or port.")
+            messageStore.addSystemMessage("Cannot query robot info: invalid host or port.")
             return
         }
 
         val snapshot = localRobotInfoService.fetchSnapshot(endpoint)
         if (snapshot == null) {
-            appendMessage(
-                UiMessageRole.SYSTEM,
-                "Local query failed: cannot reach http://${endpoint.host}:${endpoint.port}/health or /status",
+            messageStore.addSystemMessage(
+                "Local query failed: cannot reach http://${endpoint.host}:${endpoint.port}/health or /status"
             )
             return
         }
@@ -341,7 +307,7 @@ class TeleopViewModel(
             "battery" -> {
                 val batteryText = snapshot.batteryPercent?.let { "$it%" }
                     ?: "unknown (battery field not provided by current gateway/bridge)"
-                appendMessage(UiMessageRole.SYSTEM, "Robot battery: $batteryText")
+                messageStore.addSystemMessage("Robot battery: $batteryText")
             }
 
             "config" -> {
@@ -349,9 +315,8 @@ class TeleopViewModel(
                 val hz = snapshot.joystickMaxHz?.toString() ?: "n/a"
                 val voiceDuration = snapshot.voiceMaxDurationMs?.toString() ?: "n/a"
                 val videoEnabled = snapshot.videoEnabled?.toString() ?: "n/a"
-                appendMessage(
-                    UiMessageRole.SYSTEM,
-                    "Robot config: deadman=${deadman}ms, joystick_max_hz=$hz, voice_max_duration_ms=$voiceDuration, video_enabled=$videoEnabled",
+                messageStore.addSystemMessage(
+                    "Robot config: deadman=${deadman}ms, joystick_max_hz=$hz, voice_max_duration_ms=$voiceDuration, video_enabled=$videoEnabled"
                 )
             }
 
@@ -362,9 +327,8 @@ class TeleopViewModel(
                 val drop = snapshot.dropRatio?.toString() ?: "n/a"
                 val ros = snapshot.rosEnabled?.toString() ?: "n/a"
                 val rosError = snapshot.rosError?.takeIf { it.isNotBlank() } ?: "-"
-                appendMessage(
-                    UiMessageRole.SYSTEM,
-                    "Robot status: gateway_ok=${snapshot.gatewayOk}, sessions=$sessions, video_pushed=$pushed, video_sent=$sent, drop_ratio=$drop, ros_enabled=$ros, ros_error=$rosError",
+                messageStore.addSystemMessage(
+                    "Robot status: gateway_ok=${snapshot.gatewayOk}, sessions=$sessions, video_pushed=$pushed, video_sent=$sent, drop_ratio=$drop, ros_enabled=$ros, ros_error=$rosError"
                 )
             }
         }
@@ -374,7 +338,7 @@ class TeleopViewModel(
         when (event) {
             is RobotEvent.Message -> {
                 flushDeltaBufferIfNeeded()
-                appendMessage(UiMessageRole.ROBOT, event.content)
+                messageStore.addRobotMessage(event.content)
             }
 
             is RobotEvent.MessageDelta -> {
@@ -387,29 +351,29 @@ class TeleopViewModel(
             }
 
             is RobotEvent.Transcription -> {
-                appendMessage(UiMessageRole.SYSTEM, "Transcription: ${event.content}")
+                messageStore.addSystemMessage("Transcription: ${event.content}")
             }
 
             is RobotEvent.Error -> {
-                appendMessage(UiMessageRole.SYSTEM, "Error: ${event.content}")
+                messageStore.addSystemMessage("Error: ${event.content}")
             }
 
             is RobotEvent.Alert -> {
                 val codePart = event.errorCode?.let { " code=$it" } ?: ""
-                appendMessage(UiMessageRole.SYSTEM, "Alert[${event.level}]$codePart ${event.content}")
+                messageStore.addSystemMessage("Alert[${event.level}]$codePart ${event.content}")
             }
 
             is RobotEvent.JoystickAck -> {
                 updateLatencyFromAckTs(event.ts)
                 if (event.reason.isNotBlank() && event.reason != "accepted") {
-                    appendMessage(UiMessageRole.SYSTEM, "Joystick rejected: ${event.reason}")
+                    messageStore.addSystemMessage("Joystick rejected: ${event.reason}")
                 }
             }
 
             is RobotEvent.ControlAck -> {
                 updateLatencyFromAckTs(event.ts)
                 if (event.reason.isNotBlank() && event.reason != "accepted") {
-                    appendMessage(UiMessageRole.SYSTEM, "Control rejected: ${event.reason}")
+                    messageStore.addSystemMessage("Control rejected: ${event.reason}")
                 }
             }
 
@@ -418,17 +382,17 @@ class TeleopViewModel(
                     "state_changed" -> {
                         val oldState = event.oldState ?: "unknown"
                         val newState = event.state ?: "unknown"
-                        appendMessage(UiMessageRole.SYSTEM, "Gateway state: $oldState -> $newState")
+                        messageStore.addSystemMessage("Gateway state: $oldState -> $newState")
                     }
 
                     "command_applied" -> {
                         val kind = event.kind ?: "unknown"
                         val source = event.source ?: "unknown"
-                        appendMessage(UiMessageRole.SYSTEM, "Command applied: $kind from $source")
+                        messageStore.addSystemMessage("Command applied: $kind from $source")
                     }
 
                     else -> {
-                        appendMessage(UiMessageRole.SYSTEM, "Gateway event: ${event.name}")
+                        messageStore.addSystemMessage("Gateway event: ${event.name}")
                     }
                 }
             }
@@ -441,31 +405,6 @@ class TeleopViewModel(
         streamDeltaBuffer = StringBuilder()
     }
 
-    private fun appendMessage(role: UiMessageRole, content: String) {
-        messageStore.addMessage(role, content)
-    }
-
-    private fun buildEndpoint(): RobotEndpoint? {
-        val host = uiState.value.host.trim()
-        val port = uiState.value.port.toIntOrNull()
-        if (host.isBlank() || port == null) return null
-        return RobotEndpoint(host = host, port = port, signalPath = "/signal")
-    }
-
-    private suspend fun sendControlCommand(
-        command: TeleopCommand,
-        nowMs: Long,
-        allowDuringVoiceWindow: Boolean,
-    ) {
-        if (!allowDuringVoiceWindow && nowMs < voiceExclusiveUntilMs) {
-            return
-        }
-        val sent = repository.sendControl(command, clientTsMs = nowMs)
-        if (sent) {
-            controlEngine.onCommandSent(nowMs)
-        }
-    }
-
     private fun updateLatencyFromAckTs(ackTs: Long?) {
         val baseline = ackTs ?: return
         val latency = (SystemClock.elapsedRealtime() - baseline).coerceAtLeast(0L)
@@ -476,35 +415,36 @@ class TeleopViewModel(
         controlEngine.stopControlLoop()
         voiceController.release()
         runBlocking {
-            repository.disconnect()
+            connectUseCase.robotClient.disconnect()
         }
         super.onCleared()
     }
 
     private companion object {
         const val CONTROL_TICK_MS = 50L
-        const val VOICE_WINDOW_PADDING_MS = 120L
-        const val VOICE_ACTION_WINDOW_MS = 1400L
-        const val VOICE_STOP_WINDOW_MS = 600L
     }
 }
 
 class TeleopViewModelFactory(
-    private val repository: RobotClient,
+    private val connectUseCase: ConnectRobotUseCase,
+    private val disconnectUseCase: DisconnectRobotUseCase,
+    private val sendControlUseCase: SendControlCommandUseCase,
+    private val processVoiceUseCase: ProcessVoiceIntentUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
     private val voiceController: VoiceController,
-    private val voiceIntentParser: VoiceIntentParser,
     private val localRobotInfoService: LocalRobotInfoService,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         return TeleopViewModel(
-            repository = repository,
+            connectUseCase = connectUseCase,
+            disconnectUseCase = disconnectUseCase,
+            sendControlUseCase = sendControlUseCase,
+            processVoiceUseCase = processVoiceUseCase,
             networkMonitor = networkMonitor,
             controlEngine = controlEngine,
             voiceController = voiceController,
-            voiceIntentParser = voiceIntentParser,
             localRobotInfoService = localRobotInfoService,
         ) as T
     }
