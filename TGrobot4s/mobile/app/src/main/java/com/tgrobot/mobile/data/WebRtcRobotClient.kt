@@ -1,4 +1,4 @@
-package com.tgrobot.mobile.core.realtime
+package com.tgrobot.mobile.data
 
 import android.content.Context
 import com.tgrobot.mobile.core.model.RobotConnectionState
@@ -7,6 +7,7 @@ import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
 import com.tgrobot.mobile.core.model.VoiceIntentPayload
+import com.tgrobot.mobile.core.realtime.SignalingClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,11 +40,22 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-class WebRtcRealtimeTransport(
+/**
+ * 基于 WebRTC 的机器人客户端实现
+ * 
+ * 实现了 [RobotClient] 接口，通过 WebRTC DataChannel 和视频轨道与机器人通信。
+ * 
+ * 内部组件：
+ * - [SignalingClient]: WebSocket 信令客户端
+ * - [PeerConnection]: WebRTC 对等连接
+ * - [DataChannel]: 控制命令通道
+ * - [VideoTrack]: 远程视频流
+ */
+class WebRtcRobotClient(
     context: Context,
     private val signalingClient: SignalingClient = SignalingClient(),
     externalScope: CoroutineScope? = null,
-) : RealtimeTransport {
+) : RobotClient {
     private val appContext = context.applicationContext
     private val scope = externalScope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val eglBase: EglBase = EglBase.create()
@@ -244,9 +256,7 @@ class WebRtcRealtimeTransport(
 
     private fun createOfferConstraints(): MediaConstraints {
         return MediaConstraints().apply {
-            // Request remote camera track from server.
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-            // App currently does not send local mic track.
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
         }
     }
@@ -263,7 +273,6 @@ class WebRtcRealtimeTransport(
         }
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
-            // Required for addTransceiver(RECV_ONLY); Plan-B will crash in native layer.
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }
 
@@ -622,6 +631,10 @@ class WebRtcRealtimeTransport(
         private const val DATA_CHANNEL_LABEL = "control"
     }
 }
+
+// ---------------------------------------------------------------------------
+// 扩展函数：将回调式 SDP 操作转换为挂起函数
+// ---------------------------------------------------------------------------
 
 private suspend fun PeerConnection.createOfferSuspend(
     offerConstraints: MediaConstraints = MediaConstraints(),

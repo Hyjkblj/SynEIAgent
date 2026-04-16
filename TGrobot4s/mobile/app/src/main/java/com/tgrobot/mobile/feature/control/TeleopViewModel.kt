@@ -11,7 +11,7 @@ import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
 import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import com.tgrobot.mobile.core.realtime.NetworkMonitor
-import com.tgrobot.mobile.data.RobotRepository
+import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlManager
 import com.tgrobot.mobile.domain.voice.VoiceIntentCommand
@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 class TeleopViewModel(
-    private val repository: RobotRepository,
+    private val repository: RobotClient,
     private val networkMonitor: NetworkMonitor,
     private val controlManager: ControlManager,
     private val voiceController: VoiceController,
@@ -496,7 +496,7 @@ class TeleopViewModel(
 }
 
 class TeleopViewModelFactory(
-    private val repository: RobotRepository,
+    private val repository: RobotClient,
     private val networkMonitor: NetworkMonitor,
     private val controlManager: ControlManager,
     private val voiceController: VoiceController,
