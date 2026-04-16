@@ -13,14 +13,13 @@ import com.tgrobot.mobile.core.model.VoiceIntentPayload
 import com.tgrobot.mobile.core.realtime.NetworkMonitor
 import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
-import com.tgrobot.mobile.domain.control.ControlManager
+import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.voice.VoiceIntentCommand
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
 import com.tgrobot.mobile.feature.voice.VoiceController
 import com.tgrobot.mobile.feature.voice.VoiceControllerEvent
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +31,7 @@ import kotlinx.coroutines.runBlocking
 class TeleopViewModel(
     private val repository: RobotClient,
     private val networkMonitor: NetworkMonitor,
-    private val controlManager: ControlManager,
+    private val controlEngine: ControlEngine,
     private val voiceController: VoiceController,
     private val voiceIntentParser: VoiceIntentParser,
     private val localRobotInfoService: LocalRobotInfoService,
@@ -42,7 +41,6 @@ class TeleopViewModel(
     val uiState = _uiState.asStateFlow()
 
     private var session: RobotSession = RobotSession.create()
-    private var controlLoopJob: Job? = null
     private var streamDeltaBuffer = StringBuilder()
     private var voiceExclusiveUntilMs: Long = 0L
 
@@ -51,6 +49,7 @@ class TeleopViewModel(
         observeNetwork()
         observeVoice()
         observeMessages()
+        observeControlEngine()
     }
 
     fun updateHost(value: String) {
@@ -82,15 +81,15 @@ class TeleopViewModel(
         viewModelScope.launch {
             voiceController.cancelListening()
             repository.disconnect()
-            controlManager.reset()
-            stopControlLoop()
+            controlEngine.reset()
+            controlEngine.stopControlLoop()
         }
     }
 
     fun emergencyStop() {
         viewModelScope.launch {
             val now = SystemClock.elapsedRealtime()
-            val command = controlManager.emergencyStop(now)
+            val command = controlEngine.emergencyStop(now)
             sendControlCommand(command, now, allowDuringVoiceWindow = true)
             appendMessage(UiMessageRole.SYSTEM, "Emergency stop triggered.")
         }
@@ -101,13 +100,13 @@ class TeleopViewModel(
         if (_uiState.value.isVoiceListening || now < voiceExclusiveUntilMs) {
             return
         }
-        controlManager.updateInput(x = x, y = y)
+        controlEngine.updateInput(x = x, y = y)
     }
 
     fun onJoystickRelease() {
         viewModelScope.launch {
             val now = SystemClock.elapsedRealtime()
-            val command = controlManager.release(now)
+            val command = controlEngine.release(now)
             sendControlCommand(command, now, allowDuringVoiceWindow = true)
         }
     }
@@ -147,9 +146,11 @@ class TeleopViewModel(
             repository.connectionState.collect { state ->
                 _uiState.update { it.copy(connectionState = state) }
                 if (state == RobotConnectionState.DATA_CHANNEL_OPEN) {
-                    startControlLoop()
+                    controlEngine.startControlLoop(tickMs = CONTROL_TICK_MS) { command, now ->
+                        sendControlCommand(command, now, allowDuringVoiceWindow = false)
+                    }
                 } else {
-                    stopControlLoop()
+                    controlEngine.stopControlLoop()
                 }
             }
         }
@@ -195,6 +196,14 @@ class TeleopViewModel(
         viewModelScope.launch {
             messageStore.messages.collect { messages ->
                 _uiState.update { it.copy(messages = messages) }
+            }
+        }
+    }
+
+    private fun observeControlEngine() {
+        viewModelScope.launch {
+            controlEngine.lastCommand.collect { command ->
+                _uiState.update { it.copy(lastCommand = command) }
             }
         }
     }
@@ -294,7 +303,7 @@ class TeleopViewModel(
     private suspend fun preemptJoystickForVoice(windowMs: Long) {
         val now = SystemClock.elapsedRealtime()
         voiceExclusiveUntilMs = maxOf(voiceExclusiveUntilMs, now + windowMs)
-        val stopCommand = controlManager.release(now)
+        val stopCommand = controlEngine.release(now)
         sendControlCommand(stopCommand, now, allowDuringVoiceWindow = true)
     }
 
@@ -443,26 +452,6 @@ class TeleopViewModel(
         return RobotEndpoint(host = host, port = port, signalPath = "/signal")
     }
 
-    private fun startControlLoop() {
-        if (controlLoopJob?.isActive == true) return
-
-        controlLoopJob = viewModelScope.launch {
-            while (isActive) {
-                val now = SystemClock.elapsedRealtime()
-                val command = controlManager.nextCommand(now)
-                if (command != null) {
-                    sendControlCommand(command, now, allowDuringVoiceWindow = false)
-                }
-                delay(CONTROL_TICK_MS)
-            }
-        }
-    }
-
-    private fun stopControlLoop() {
-        controlLoopJob?.cancel()
-        controlLoopJob = null
-    }
-
     private suspend fun sendControlCommand(
         command: TeleopCommand,
         nowMs: Long,
@@ -473,8 +462,7 @@ class TeleopViewModel(
         }
         val sent = repository.sendControl(command, clientTsMs = nowMs)
         if (sent) {
-            controlManager.onCommandSent(nowMs)
-            _uiState.update { it.copy(lastCommand = command) }
+            controlEngine.onCommandSent(nowMs)
         }
     }
 
@@ -485,7 +473,7 @@ class TeleopViewModel(
     }
 
     override fun onCleared() {
-        stopControlLoop()
+        controlEngine.stopControlLoop()
         voiceController.release()
         runBlocking {
             repository.disconnect()
@@ -504,7 +492,7 @@ class TeleopViewModel(
 class TeleopViewModelFactory(
     private val repository: RobotClient,
     private val networkMonitor: NetworkMonitor,
-    private val controlManager: ControlManager,
+    private val controlEngine: ControlEngine,
     private val voiceController: VoiceController,
     private val voiceIntentParser: VoiceIntentParser,
     private val localRobotInfoService: LocalRobotInfoService,
@@ -514,7 +502,7 @@ class TeleopViewModelFactory(
         return TeleopViewModel(
             repository = repository,
             networkMonitor = networkMonitor,
-            controlManager = controlManager,
+            controlEngine = controlEngine,
             voiceController = voiceController,
             voiceIntentParser = voiceIntentParser,
             localRobotInfoService = localRobotInfoService,

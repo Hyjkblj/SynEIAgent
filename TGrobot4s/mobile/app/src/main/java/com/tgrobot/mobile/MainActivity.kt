@@ -17,7 +17,7 @@ import com.tgrobot.mobile.core.realtime.AndroidNetworkMonitor
 import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.WebRtcRobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
-import com.tgrobot.mobile.domain.control.ControlManager
+import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
 import com.tgrobot.mobile.feature.control.TeleopScreen
 import com.tgrobot.mobile.feature.control.TeleopViewModel
@@ -28,7 +28,7 @@ import com.tgrobot.mobile.ui.theme.RobotAppTheme
 class MainActivity : ComponentActivity() {
     private val robotClient: RobotClient by lazy { WebRtcRobotClient(applicationContext) }
     private val networkMonitor by lazy { AndroidNetworkMonitor(applicationContext) }
-    private val controlManager by lazy { ControlManager() }
+    private val controlEngine by lazy { ControlEngine() }
     private val voiceController by lazy { VoiceController(this) }
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
         TeleopViewModelFactory(
             repository = robotClient,
             networkMonitor = networkMonitor,
-            controlManager = controlManager,
+            controlEngine = controlEngine,
             voiceController = voiceController,
             voiceIntentParser = voiceIntentParser,
             localRobotInfoService = localRobotInfoService,
