@@ -19,6 +19,7 @@ import com.tgrobot.mobile.data.WebRtcRobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.message.MessageStore
+import com.tgrobot.mobile.domain.session.RobotSessionManager
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.ProcessVoiceIntentUseCase
@@ -38,9 +39,10 @@ class MainActivity : ComponentActivity() {
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
     private val messageStore by lazy { MessageStore() }
+    private val sessionManager by lazy { RobotSessionManager() }
 
     // UseCase instances
-    private val connectUseCase by lazy { ConnectRobotUseCase(robotClient) }
+    private val connectUseCase by lazy { ConnectRobotUseCase(robotClient, sessionManager) }
     private val sendControlUseCase by lazy {
         SendControlCommandUseCase(robotClient, controlEngine)
     }
@@ -53,7 +55,7 @@ class MainActivity : ComponentActivity() {
 
     // DisconnectRobotUseCase
     private val disconnectUseCase by lazy {
-        DisconnectRobotUseCase(robotClient, controlEngine, voiceModule)
+        DisconnectRobotUseCase(robotClient, controlEngine, voiceModule, sessionManager)
     }
 
     // Coordinator

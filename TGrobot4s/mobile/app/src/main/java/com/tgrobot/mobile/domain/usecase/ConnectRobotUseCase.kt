@@ -3,6 +3,7 @@ package com.tgrobot.mobile.domain.usecase
 import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.data.RobotClient
+import com.tgrobot.mobile.domain.session.RobotSessionManager
 
 /**
  * 连接机器人用例
@@ -11,11 +12,12 @@ import com.tgrobot.mobile.data.RobotClient
  * 
  * 职责：
  * - 验证端点配置
- * - 创建会话
+ * - 管理会话生命周期
  * - 发起连接
  */
 class ConnectRobotUseCase(
     val robotClient: RobotClient,
+    private val sessionManager: RobotSessionManager = RobotSessionManager(),
 ) {
     /**
      * 执行连接
@@ -28,10 +30,13 @@ class ConnectRobotUseCase(
         val endpoint = buildEndpoint(host, port)
             ?: return Result.failure(IllegalArgumentException("Invalid host or port"))
 
-        val session = RobotSession.create()
+        val session = sessionManager.createSession()
         return runCatching {
             robotClient.connect(endpoint, session)
+            sessionManager.activate()
             session
+        }.onFailure {
+            sessionManager.clear()
         }
     }
 
@@ -44,4 +49,16 @@ class ConnectRobotUseCase(
         if (trimmedHost.isBlank() || portNumber == null) return null
         return RobotEndpoint(host = trimmedHost, port = portNumber, signalPath = "/signal")
     }
+
+    /**
+     * 获取当前会话
+     */
+    val currentSession: RobotSession?
+        get() = sessionManager.currentSession
+
+    /**
+     * 会话状态
+     */
+    val sessionState
+        get() = sessionManager.state
 }
