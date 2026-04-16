@@ -18,11 +18,13 @@ import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.WebRtcRobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
+import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.ProcessVoiceIntentUseCase
 import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
+import com.tgrobot.mobile.feature.control.TeleopCoordinator
 import com.tgrobot.mobile.feature.control.TeleopScreen
 import com.tgrobot.mobile.feature.control.TeleopViewModel
 import com.tgrobot.mobile.feature.control.TeleopViewModelFactory
@@ -35,6 +37,7 @@ class MainActivity : ComponentActivity() {
     private val controlEngine by lazy { ControlEngine() }
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
+    private val messageStore by lazy { MessageStore() }
 
     // UseCase instances
     private val connectUseCase by lazy { ConnectRobotUseCase(robotClient) }
@@ -44,22 +47,34 @@ class MainActivity : ComponentActivity() {
     private val processVoiceUseCase by lazy {
         ProcessVoiceIntentUseCase(robotClient, voiceIntentParser)
     }
-    private val disconnectUseCase by lazy {
-        DisconnectRobotUseCase(robotClient, controlEngine, VoiceModule(this, processVoiceUseCase))
-    }
 
     // VoiceModule
     private val voiceModule by lazy { VoiceModule(this, processVoiceUseCase) }
 
-    private val viewModelFactory by lazy {
-        TeleopViewModelFactory(
+    // DisconnectRobotUseCase
+    private val disconnectUseCase by lazy {
+        DisconnectRobotUseCase(robotClient, controlEngine, voiceModule)
+    }
+
+    // Coordinator
+    private val coordinator by lazy {
+        TeleopCoordinator(
             connectUseCase = connectUseCase,
             disconnectUseCase = disconnectUseCase,
             sendControlUseCase = sendControlUseCase,
-            networkMonitor = networkMonitor,
             controlEngine = controlEngine,
             voiceModule = voiceModule,
             localRobotInfoService = localRobotInfoService,
+            messageStore = messageStore,
+        )
+    }
+
+    private val viewModelFactory by lazy {
+        TeleopViewModelFactory(
+            coordinator = coordinator,
+            connectUseCase = connectUseCase,
+            networkMonitor = networkMonitor,
+            controlEngine = controlEngine,
         )
     }
 
