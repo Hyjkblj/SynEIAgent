@@ -18,6 +18,7 @@ import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.WebRtcRobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
+import com.tgrobot.mobile.domain.event.EventDispatcher
 import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.session.RobotSessionManager
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
     private val messageStore by lazy { MessageStore() }
     private val sessionManager by lazy { RobotSessionManager() }
+    private val eventDispatcher by lazy { EventDispatcher(messageStore) }
 
     // UseCase instances
     private val connectUseCase by lazy { ConnectRobotUseCase(robotClient, sessionManager) }
@@ -68,6 +70,7 @@ class MainActivity : ComponentActivity() {
             voiceModule = voiceModule,
             localRobotInfoService = localRobotInfoService,
             messageStore = messageStore,
+            eventDispatcher = eventDispatcher,
         )
     }
 

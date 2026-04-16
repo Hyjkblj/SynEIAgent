@@ -5,6 +5,9 @@ import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
+import com.tgrobot.mobile.domain.event.EventDispatcher
+import com.tgrobot.mobile.domain.event.LatencyUpdateHandler
+import com.tgrobot.mobile.domain.event.ProcessedEvent
 import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
@@ -41,6 +44,7 @@ class TeleopCoordinator(
     private val voiceModule: VoiceModule,
     private val localRobotInfoService: LocalRobotInfoService,
     val messageStore: MessageStore,
+    private val eventDispatcher: EventDispatcher,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
 ) {
     private val _uiState = MutableStateFlow(TeleopUiState())
@@ -49,10 +53,17 @@ class TeleopCoordinator(
     private var session: RobotSession = RobotSession.create()
     private var voiceExclusiveUntilMs: Long = 0L
 
+    // 延迟更新处理器
+    private val latencyHandler = LatencyUpdateHandler { latency ->
+        _uiState.update { it.copy(latencyMs = latency) }
+    }
+
     init {
+        eventDispatcher.registerHandler(latencyHandler)
         observeVoiceModule()
         observeControlEngine()
         observeMessages()
+        observeProcessedEvents()
     }
 
     /**
@@ -207,25 +218,7 @@ class TeleopCoordinator(
      * 处理机器人事件
      */
     fun handleRobotEvent(event: com.tgrobot.mobile.core.model.RobotEvent) {
-        when (event) {
-            is com.tgrobot.mobile.core.model.RobotEvent.JoystickAck -> {
-                updateLatency(event.ts?.let { ts ->
-                    (SystemClock.elapsedRealtime() - ts).coerceAtLeast(0L)
-                })
-                if (event.reason.isNotBlank() && event.reason != "accepted") {
-                    messageStore.addSystemMessage("Joystick rejected: ${event.reason}")
-                }
-            }
-            is com.tgrobot.mobile.core.model.RobotEvent.ControlAck -> {
-                updateLatency(event.ts?.let { ts ->
-                    (SystemClock.elapsedRealtime() - ts).coerceAtLeast(0L)
-                })
-                if (event.reason.isNotBlank() && event.reason != "accepted") {
-                    messageStore.addSystemMessage("Control rejected: ${event.reason}")
-                }
-            }
-            else -> Unit
-        }
+        eventDispatcher.dispatch(event)
     }
 
     private fun observeVoiceModule() {
@@ -282,6 +275,26 @@ class TeleopCoordinator(
         scope.launch {
             messageStore.messages.collect { messages ->
                 _uiState.update { it.copy(messages = messages) }
+            }
+        }
+    }
+
+    private fun observeProcessedEvents() {
+        scope.launch {
+            eventDispatcher.processedEvents.collect { event ->
+                when (event) {
+                    is ProcessedEvent.JoystickAck -> {
+                        if (event.reason.isNotBlank() && event.reason != "accepted") {
+                            messageStore.addSystemMessage("Joystick rejected: ${event.reason}")
+                        }
+                    }
+                    is ProcessedEvent.ControlAck -> {
+                        if (event.reason.isNotBlank() && event.reason != "accepted") {
+                            messageStore.addSystemMessage("Control rejected: ${event.reason}")
+                        }
+                    }
+                    else -> Unit
+                }
             }
         }
     }
@@ -385,5 +398,6 @@ class TeleopCoordinator(
     fun release() {
         controlEngine.stopControlLoop()
         voiceModule.release()
+        eventDispatcher.clear()
     }
 }
