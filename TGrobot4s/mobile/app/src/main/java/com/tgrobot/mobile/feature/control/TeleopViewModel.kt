@@ -14,11 +14,10 @@ import com.tgrobot.mobile.domain.message.MessageStore
 import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
-import com.tgrobot.mobile.domain.usecase.ProcessVoiceIntentUseCase
 import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
 import com.tgrobot.mobile.domain.usecase.VoiceIntentResult
-import com.tgrobot.mobile.feature.voice.VoiceController
-import com.tgrobot.mobile.feature.voice.VoiceControllerEvent
+import com.tgrobot.mobile.feature.voice.VoiceModule
+import com.tgrobot.mobile.feature.voice.VoiceModuleEvent
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -29,10 +28,9 @@ class TeleopViewModel(
     private val connectUseCase: ConnectRobotUseCase,
     private val disconnectUseCase: DisconnectRobotUseCase,
     private val sendControlUseCase: SendControlCommandUseCase,
-    private val processVoiceUseCase: ProcessVoiceIntentUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
-    private val voiceController: VoiceController,
+    private val voiceModule: VoiceModule,
     private val localRobotInfoService: LocalRobotInfoService,
     private val messageStore: MessageStore = MessageStore(),
 ) : ViewModel() {
@@ -46,7 +44,7 @@ class TeleopViewModel(
     init {
         observeRepository()
         observeNetwork()
-        observeVoice()
+        observeVoiceModule()
         observeMessages()
         observeControlEngine()
     }
@@ -110,10 +108,10 @@ class TeleopViewModel(
     fun toggleVoiceListening() {
         _uiState.update { it.copy(voiceError = null) }
         if (_uiState.value.isVoiceListening) {
-            voiceController.stopListening()
+            voiceModule.stopListening()
             return
         }
-        if (!voiceController.startListening()) {
+        if (!voiceModule.startListening()) {
             messageStore.addSystemMessage("Voice start failed.")
         }
     }
@@ -129,13 +127,7 @@ class TeleopViewModel(
 
         _uiState.update { it.copy(draftText = "") }
         messageStore.addUserMessage(text)
-
-        viewModelScope.launch {
-            val result = processVoiceUseCase(text)
-            if (result is VoiceIntentResult.Failed) {
-                messageStore.addSystemMessage(result.message)
-            }
-        }
+        // 文本发送通过 VoiceModule 的 commandResults 处理
     }
 
     private fun observeRepository() {
@@ -171,21 +163,27 @@ class TeleopViewModel(
         }
     }
 
-    private fun observeVoice() {
+    private fun observeVoiceModule() {
         viewModelScope.launch {
-            voiceController.state.collect { state ->
+            voiceModule.state.collect { state ->
                 _uiState.update {
                     it.copy(
                         voiceAvailable = state.isAvailable,
                         isVoiceListening = state.isListening,
                         voicePartialText = state.partialText,
+                        lastVoiceText = state.lastText,
+                        voiceError = state.error,
                     )
                 }
             }
         }
 
         viewModelScope.launch {
-            voiceController.events.collect(::handleVoiceEvent)
+            voiceModule.events.collect(::handleVoiceModuleEvent)
+        }
+
+        viewModelScope.launch {
+            voiceModule.commandResults.collect(::handleVoiceCommandResult)
         }
     }
 
@@ -205,38 +203,27 @@ class TeleopViewModel(
         }
     }
 
-    private suspend fun handleVoiceEvent(event: VoiceControllerEvent) {
+    private fun handleVoiceModuleEvent(event: VoiceModuleEvent) {
         when (event) {
-            is VoiceControllerEvent.FinalText -> {
-                val text = event.text.trim()
-                if (text.isBlank()) return
-                _uiState.update {
-                    it.copy(
-                        lastVoiceText = text,
-                        voiceError = null,
-                    )
-                }
-                messageStore.addUserMessage("Voice: $text")
-                dispatchVoiceText(text)
+            is VoiceModuleEvent.RecognitionComplete -> {
+                messageStore.addUserMessage("Voice: ${event.text}")
             }
-
-            is VoiceControllerEvent.Error -> {
+            is VoiceModuleEvent.RecognitionError -> {
                 if (event.isRecoverable) {
-                    _uiState.update { it.copy(voiceError = null) }
                     messageStore.addSystemMessage("Voice notice(${event.code}): ${event.message}")
                 } else {
-                    _uiState.update { it.copy(voiceError = event.message) }
                     messageStore.addSystemMessage("Voice error(${event.code}): ${event.message}")
                 }
+            }
+            is VoiceModuleEvent.PermissionDenied -> {
+                messageStore.addSystemMessage("Microphone permission denied.")
             }
         }
     }
 
-    private suspend fun dispatchVoiceText(text: String) {
-        val result = processVoiceUseCase(text)
-        
+    private suspend fun handleVoiceCommandResult(result: VoiceIntentResult) {
         // 设置语音独占窗口
-        val windowMs = processVoiceUseCase.getVoiceExclusiveWindowMs(result)
+        val windowMs = voiceModule.getVoiceExclusiveWindowMs(result)
         if (windowMs > 0) {
             preemptJoystickForVoice(windowMs)
         }
@@ -413,7 +400,7 @@ class TeleopViewModel(
 
     override fun onCleared() {
         controlEngine.stopControlLoop()
-        voiceController.release()
+        voiceModule.release()
         runBlocking {
             connectUseCase.robotClient.disconnect()
         }
@@ -429,10 +416,9 @@ class TeleopViewModelFactory(
     private val connectUseCase: ConnectRobotUseCase,
     private val disconnectUseCase: DisconnectRobotUseCase,
     private val sendControlUseCase: SendControlCommandUseCase,
-    private val processVoiceUseCase: ProcessVoiceIntentUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
-    private val voiceController: VoiceController,
+    private val voiceModule: VoiceModule,
     private val localRobotInfoService: LocalRobotInfoService,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
@@ -441,10 +427,9 @@ class TeleopViewModelFactory(
             connectUseCase = connectUseCase,
             disconnectUseCase = disconnectUseCase,
             sendControlUseCase = sendControlUseCase,
-            processVoiceUseCase = processVoiceUseCase,
             networkMonitor = networkMonitor,
             controlEngine = controlEngine,
-            voiceController = voiceController,
+            voiceModule = voiceModule,
             localRobotInfoService = localRobotInfoService,
         ) as T
     }

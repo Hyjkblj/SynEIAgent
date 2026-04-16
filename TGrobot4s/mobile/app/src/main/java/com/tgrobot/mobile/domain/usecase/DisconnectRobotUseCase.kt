@@ -2,7 +2,7 @@ package com.tgrobot.mobile.domain.usecase
 
 import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.domain.control.ControlEngine
-import com.tgrobot.mobile.feature.voice.VoiceController
+import com.tgrobot.mobile.feature.voice.VoiceModule
 
 /**
  * 断开机器人连接用例
@@ -18,13 +18,13 @@ import com.tgrobot.mobile.feature.voice.VoiceController
 class DisconnectRobotUseCase(
     private val robotClient: RobotClient,
     private val controlEngine: ControlEngine,
-    private val voiceController: VoiceController,
+    private val voiceModule: VoiceModule,
 ) {
     /**
      * 执行断开连接
      */
     suspend operator fun invoke() {
-        voiceController.cancelListening()
+        voiceModule.cancelListening()
         controlEngine.stopControlLoop()
         controlEngine.reset()
         robotClient.disconnect()

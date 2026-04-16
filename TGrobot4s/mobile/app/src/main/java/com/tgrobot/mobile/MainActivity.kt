@@ -26,38 +26,39 @@ import com.tgrobot.mobile.domain.voice.VoiceIntentParser
 import com.tgrobot.mobile.feature.control.TeleopScreen
 import com.tgrobot.mobile.feature.control.TeleopViewModel
 import com.tgrobot.mobile.feature.control.TeleopViewModelFactory
-import com.tgrobot.mobile.feature.voice.VoiceController
+import com.tgrobot.mobile.feature.voice.VoiceModule
 import com.tgrobot.mobile.ui.theme.RobotAppTheme
 
 class MainActivity : ComponentActivity() {
     private val robotClient: RobotClient by lazy { WebRtcRobotClient(applicationContext) }
     private val networkMonitor by lazy { AndroidNetworkMonitor(applicationContext) }
     private val controlEngine by lazy { ControlEngine() }
-    private val voiceController by lazy { VoiceController(this) }
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
 
     // UseCase instances
     private val connectUseCase by lazy { ConnectRobotUseCase(robotClient) }
-    private val disconnectUseCase by lazy {
-        DisconnectRobotUseCase(robotClient, controlEngine, voiceController)
-    }
     private val sendControlUseCase by lazy {
         SendControlCommandUseCase(robotClient, controlEngine)
     }
     private val processVoiceUseCase by lazy {
         ProcessVoiceIntentUseCase(robotClient, voiceIntentParser)
     }
+    private val disconnectUseCase by lazy {
+        DisconnectRobotUseCase(robotClient, controlEngine, VoiceModule(this, processVoiceUseCase))
+    }
+
+    // VoiceModule
+    private val voiceModule by lazy { VoiceModule(this, processVoiceUseCase) }
 
     private val viewModelFactory by lazy {
         TeleopViewModelFactory(
             connectUseCase = connectUseCase,
             disconnectUseCase = disconnectUseCase,
             sendControlUseCase = sendControlUseCase,
-            processVoiceUseCase = processVoiceUseCase,
             networkMonitor = networkMonitor,
             controlEngine = controlEngine,
-            voiceController = voiceController,
+            voiceModule = voiceModule,
             localRobotInfoService = localRobotInfoService,
         )
     }
