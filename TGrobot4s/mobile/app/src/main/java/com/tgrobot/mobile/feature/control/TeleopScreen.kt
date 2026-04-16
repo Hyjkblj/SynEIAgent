@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.tgrobot.mobile.core.model.RobotConnectionState
+import com.tgrobot.mobile.domain.message.UiMessageRole
 import kotlin.math.hypot
 import kotlin.math.min
 import org.webrtc.EglBase

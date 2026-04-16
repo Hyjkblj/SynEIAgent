@@ -14,6 +14,8 @@ import com.tgrobot.mobile.core.realtime.NetworkMonitor
 import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlManager
+import com.tgrobot.mobile.domain.message.MessageStore
+import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.voice.VoiceIntentCommand
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
 import com.tgrobot.mobile.feature.voice.VoiceController
@@ -34,6 +36,7 @@ class TeleopViewModel(
     private val voiceController: VoiceController,
     private val voiceIntentParser: VoiceIntentParser,
     private val localRobotInfoService: LocalRobotInfoService,
+    private val messageStore: MessageStore = MessageStore(),
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(TeleopUiState())
     val uiState = _uiState.asStateFlow()
@@ -47,6 +50,7 @@ class TeleopViewModel(
         observeRepository()
         observeNetwork()
         observeVoice()
+        observeMessages()
     }
 
     fun updateHost(value: String) {
@@ -184,6 +188,14 @@ class TeleopViewModel(
 
         viewModelScope.launch {
             voiceController.events.collect(::handleVoiceEvent)
+        }
+    }
+
+    private fun observeMessages() {
+        viewModelScope.launch {
+            messageStore.messages.collect { messages ->
+                _uiState.update { it.copy(messages = messages) }
+            }
         }
     }
 
@@ -416,18 +428,12 @@ class TeleopViewModel(
 
     private fun flushDeltaBufferIfNeeded() {
         if (streamDeltaBuffer.isEmpty()) return
-        appendMessage(UiMessageRole.ROBOT, streamDeltaBuffer.toString())
+        messageStore.addRobotMessage(streamDeltaBuffer.toString())
         streamDeltaBuffer = StringBuilder()
     }
 
     private fun appendMessage(role: UiMessageRole, content: String) {
-        val normalized = content.trim()
-        if (normalized.isBlank()) return
-
-        _uiState.update { current ->
-            val next = (current.messages + UiMessage(role = role, content = normalized)).takeLast(120)
-            current.copy(messages = next)
-        }
+        messageStore.addMessage(role, content)
     }
 
     private fun buildEndpoint(): RobotEndpoint? {

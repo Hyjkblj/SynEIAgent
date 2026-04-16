@@ -2,19 +2,9 @@ package com.tgrobot.mobile.feature.control
 
 import com.tgrobot.mobile.core.model.RobotConnectionState
 import com.tgrobot.mobile.core.model.TeleopCommand
+import com.tgrobot.mobile.domain.message.UiMessage
+import com.tgrobot.mobile.domain.message.UiMessageRole
 import org.webrtc.VideoTrack
-
-enum class UiMessageRole {
-    USER,
-    ROBOT,
-    SYSTEM,
-}
-
-data class UiMessage(
-    val id: Long = System.nanoTime(),
-    val role: UiMessageRole,
-    val content: String,
-)
 
 data class TeleopUiState(
     val host: String = "192.168.41.1",
