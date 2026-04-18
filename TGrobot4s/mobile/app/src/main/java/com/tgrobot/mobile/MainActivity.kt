@@ -31,6 +31,12 @@ import com.tgrobot.mobile.feature.control.TeleopScreen
 import com.tgrobot.mobile.feature.control.TeleopViewModel
 import com.tgrobot.mobile.feature.control.TeleopViewModelFactory
 import com.tgrobot.mobile.feature.voice.VoiceModule
+import com.tgrobot.mobile.feature.voice.VoicePipelineController
+import com.tgrobot.mobile.feature.voice.adapter.AospVoiceAdapter
+import com.tgrobot.mobile.feature.voice.asr.AsrRouter
+import com.tgrobot.mobile.feature.voice.asr.VoiceEngineBootstrap
+import com.tgrobot.mobile.feature.voice.asr.VoiceEngineConfig
+import com.tgrobot.mobile.feature.voice.policy.DevicePolicy
 import com.tgrobot.mobile.ui.theme.RobotAppTheme
 
 class MainActivity : ComponentActivity() {
@@ -52,8 +58,29 @@ class MainActivity : ComponentActivity() {
         ProcessVoiceIntentUseCase(robotClient, voiceIntentParser)
     }
 
-    // VoiceModule
-    private val voiceModule by lazy { VoiceModule(this, processVoiceUseCase) }
+    // 新语音链路：AospVoiceAdapter -> AsrRouter -> SystemAsrEngine
+    private val devicePolicy by lazy { DevicePolicy(applicationContext) }
+    private val voiceEngineConfig by lazy { VoiceEngineConfig.fromBuildConfig() }
+    private val asrBootstrap by lazy { VoiceEngineBootstrap(applicationContext) }
+    private val asrRouter by lazy {
+        AsrRouter(devicePolicy = devicePolicy).apply {
+            overrideMode = voiceEngineConfig.overrideMode
+        }
+    }
+    private val voicePipeline by lazy {
+        asrBootstrap.register(voiceEngineConfig)
+        VoicePipelineController(
+            adapterProvider = { AospVoiceAdapter(applicationContext) },
+            asrRouter = asrRouter,
+        )
+    }
+    private val voiceModule by lazy {
+        VoiceModule(
+            context = this,
+            processVoiceIntentUseCase = processVoiceUseCase,
+            pipeline = voicePipeline,
+        )
+    }
 
     // DisconnectRobotUseCase
     private val disconnectUseCase by lazy {
@@ -80,6 +107,7 @@ class MainActivity : ComponentActivity() {
             connectUseCase = connectUseCase,
             networkMonitor = networkMonitor,
             controlEngine = controlEngine,
+            sendControlUseCase = sendControlUseCase,
         )
     }
 
@@ -124,6 +152,7 @@ class MainActivity : ComponentActivity() {
                     onJoystickRelease = viewModel::onJoystickRelease,
                     onDraftTextChange = viewModel::updateDraftText,
                     onSendText = viewModel::sendText,
+                    onCameraSelected = viewModel::switchPrimaryCamera,
                 )
             }
         }

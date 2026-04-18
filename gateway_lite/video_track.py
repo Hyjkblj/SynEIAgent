@@ -25,8 +25,11 @@ class VideoMetrics:
 class SharedVideoTrack(VideoStreamTrack):
     kind = "video"
 
-    def __init__(self) -> None:
+    def __init__(self, camera_id: str = "head") -> None:
         super().__init__()
+        self.camera_id = (camera_id or "head").strip() or "head"
+        # aiortc does not expose custom stream_id in addTrack; embed camera identity in track id.
+        self._id = f"camera_{_safe_camera_id(self.camera_id)}"
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=4)
         self.metrics = VideoMetrics()
 
@@ -58,6 +61,7 @@ class SharedVideoTrack(VideoStreamTrack):
         pushed = self.metrics.pushed
         dropped = self.metrics.dropped
         return {
+            "camera_id": self.camera_id,
             "frames_pushed": pushed,
             "frames_dropped": dropped,
             "frames_sent": self.metrics.sent,
@@ -72,3 +76,8 @@ class SharedVideoTrack(VideoStreamTrack):
         frame.pts = pts
         frame.time_base = time_base
         return frame
+
+
+def _safe_camera_id(camera_id: str) -> str:
+    out = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in camera_id.strip().lower())
+    return out or "head"

@@ -36,9 +36,24 @@ interface RobotClient {
     val events: Flow<RobotEvent>
 
     /**
+     * 所有远程视频轨道（cameraId -> VideoTrack）
+     */
+    val videoTracks: StateFlow<Map<String, VideoTrack>>
+
+    /**
+     * 当前主视角 cameraId
+     */
+    val primaryCameraId: StateFlow<String>
+
+    /**
      * 远程视频轨道
      */
     val remoteVideoTrack: StateFlow<VideoTrack?>
+
+    /**
+     * 切换主视角 cameraId
+     */
+    fun setPrimaryCamera(cameraId: String)
 
     /**
      * 连接到机器人

@@ -1,15 +1,14 @@
 package com.tgrobot.mobile.feature.control
 
 import android.os.SystemClock
-import com.tgrobot.mobile.core.model.RobotEndpoint
 import com.tgrobot.mobile.core.model.RobotSession
+import com.tgrobot.mobile.core.model.buildVideoStreams
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
 import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.event.EventDispatcher
 import com.tgrobot.mobile.domain.event.LatencyUpdateHandler
 import com.tgrobot.mobile.domain.event.ProcessedEvent
 import com.tgrobot.mobile.domain.message.MessageStore
-import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
@@ -18,12 +17,12 @@ import com.tgrobot.mobile.feature.voice.VoiceModule
 import com.tgrobot.mobile.feature.voice.VoiceModuleEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.webrtc.VideoTrack
 
 /**
  * Teleop 协调器
@@ -196,8 +195,44 @@ class TeleopCoordinator(
     /**
      * 更新视频轨道
      */
-    fun updateVideoTrack(track: org.webrtc.VideoTrack?) {
-        _uiState.update { it.copy(remoteVideoTrack = track) }
+    fun updateVideoTracks(
+        tracks: Map<String, VideoTrack>,
+        preferredPrimaryCameraId: String,
+    ) {
+        _uiState.update { current ->
+            val resolvedPrimary = resolvePrimaryCameraId(
+                preferred = preferredPrimaryCameraId,
+                fallback = current.primaryCameraId,
+                tracks = tracks,
+            )
+            val streams = buildVideoStreams(tracks = tracks, primaryCameraId = resolvedPrimary)
+            current.copy(
+                primaryCameraId = resolvedPrimary,
+                videoStreams = streams,
+                remoteVideoTrack = streams[resolvedPrimary]?.track ?: streams.values.firstOrNull { it.track != null }?.track,
+            )
+        }
+    }
+
+    fun switchPrimaryCamera(cameraId: String) {
+        val normalized = cameraId.trim().lowercase()
+        if (normalized.isBlank()) return
+        _uiState.update { current ->
+            val stream = current.videoStreams[normalized]
+            if (stream == null || !stream.isAvailable) {
+                return@update current
+            }
+            val tracks = current.videoStreams
+                .mapValues { (_, value) -> value.track }
+                .filterValues { it != null }
+                .mapValues { (_, value) -> value!! }
+            val streams = buildVideoStreams(tracks = tracks, primaryCameraId = normalized)
+            current.copy(
+                primaryCameraId = normalized,
+                videoStreams = streams,
+                remoteVideoTrack = stream.track,
+            )
+        }
     }
 
     /**
@@ -219,6 +254,25 @@ class TeleopCoordinator(
      */
     fun handleRobotEvent(event: com.tgrobot.mobile.core.model.RobotEvent) {
         eventDispatcher.dispatch(event)
+    }
+
+    private fun resolvePrimaryCameraId(
+        preferred: String,
+        fallback: String,
+        tracks: Map<String, VideoTrack>,
+    ): String {
+        val normalizedPreferred = preferred.trim().lowercase()
+        if (normalizedPreferred.isNotBlank() && tracks.containsKey(normalizedPreferred)) {
+            return normalizedPreferred
+        }
+        val normalizedFallback = fallback.trim().lowercase()
+        if (normalizedFallback.isNotBlank() && tracks.containsKey(normalizedFallback)) {
+            return normalizedFallback
+        }
+        if (tracks.containsKey("head")) {
+            return "head"
+        }
+        return tracks.keys.firstOrNull() ?: "head"
     }
 
     private fun observeVoiceModule() {

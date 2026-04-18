@@ -7,15 +7,9 @@ import com.tgrobot.mobile.core.model.RobotConnectionState
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.realtime.NetworkMonitor
 import com.tgrobot.mobile.domain.control.ControlEngine
-import com.tgrobot.mobile.domain.message.MessageStore
-import com.tgrobot.mobile.domain.message.UiMessageRole
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
-import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
-import com.tgrobot.mobile.feature.voice.VoiceModule
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -32,6 +26,7 @@ class TeleopViewModel(
     private val connectUseCase: ConnectRobotUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
+    private val sendControlUseCase: SendControlCommandUseCase,
 ) : ViewModel() {
 
     val uiState = coordinator.uiState
@@ -63,13 +58,18 @@ class TeleopViewModel(
 
     fun sendText() = coordinator.sendText()
 
+    fun switchPrimaryCamera(cameraId: String) {
+        connectUseCase.robotClient.setPrimaryCamera(cameraId)
+        coordinator.switchPrimaryCamera(cameraId)
+    }
+
     private fun observeRepository() {
         viewModelScope.launch {
             connectUseCase.robotClient.connectionState.collect { state ->
                 coordinator.updateConnectionState(state)
                 if (state == RobotConnectionState.DATA_CHANNEL_OPEN) {
                     controlEngine.startControlLoop(tickMs = CONTROL_TICK_MS) { command, now ->
-                        // 控制命令发送由 UseCase 处理
+                        sendControlUseCase.sendCommand(command, now)
                     }
                 } else {
                     controlEngine.stopControlLoop()
@@ -78,8 +78,16 @@ class TeleopViewModel(
         }
 
         viewModelScope.launch {
-            connectUseCase.robotClient.remoteVideoTrack.collect { track ->
-                coordinator.updateVideoTrack(track)
+            combine(
+                connectUseCase.robotClient.videoTracks,
+                connectUseCase.robotClient.primaryCameraId,
+            ) { tracks, primaryCameraId ->
+                tracks to primaryCameraId
+            }.collect { (tracks, primaryCameraId) ->
+                coordinator.updateVideoTracks(
+                    tracks = tracks,
+                    preferredPrimaryCameraId = primaryCameraId,
+                )
             }
         }
 
@@ -154,6 +162,7 @@ class TeleopViewModelFactory(
     private val connectUseCase: ConnectRobotUseCase,
     private val networkMonitor: NetworkMonitor,
     private val controlEngine: ControlEngine,
+    private val sendControlUseCase: SendControlCommandUseCase,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -162,6 +171,7 @@ class TeleopViewModelFactory(
             connectUseCase = connectUseCase,
             networkMonitor = networkMonitor,
             controlEngine = controlEngine,
+            sendControlUseCase = sendControlUseCase,
         ) as T
     }
 }

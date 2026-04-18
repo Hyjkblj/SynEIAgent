@@ -83,6 +83,7 @@ fun TeleopScreen(
     onJoystickRelease: () -> Unit,
     onDraftTextChange: (String) -> Unit,
     onSendText: () -> Unit,
+    onCameraSelected: (String) -> Unit,
 ) {
     if (!state.isConnected) {
         ConnectScreen(
@@ -101,6 +102,7 @@ fun TeleopScreen(
             onJoystickRelease = onJoystickRelease,
             onDraftTextChange = onDraftTextChange,
             onSendText = onSendText,
+            onCameraSelected = onCameraSelected,
         )
     }
 }
@@ -205,8 +207,10 @@ private fun DriveScreen(
     onJoystickRelease: () -> Unit,
     onDraftTextChange: (String) -> Unit,
     onSendText: () -> Unit,
+    onCameraSelected: (String) -> Unit,
 ) {
     var showChat by remember { mutableStateOf(false) }
+    var showVoiceTestDialog by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -226,6 +230,15 @@ private fun DriveScreen(
         TopRightHud(
             state = state,
             modifier = Modifier.align(Alignment.TopEnd),
+        )
+
+        CameraSelectorDropdown(
+            streams = state.videoStreams.values.sortedBy { it.order },
+            primaryCameraId = state.primaryCameraId,
+            onCameraSelected = onCameraSelected,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 14.dp),
         )
 
         // Bottom-left: joystick
@@ -250,7 +263,10 @@ private fun DriveScreen(
             horizontalAlignment = Alignment.End,
         ) {
             FilledTonalButton(
-                onClick = onVoiceControlClick,
+                onClick = {
+                    showVoiceTestDialog = true
+                    onVoiceControlClick()
+                },
                 enabled = state.voiceAvailable,
                 shape = RoundedCornerShape(12.dp),
             ) {
@@ -325,6 +341,17 @@ private fun DriveScreen(
                 state = state,
                 onDraftTextChange = onDraftTextChange,
                 onSendText = onSendText,
+            )
+        }
+
+        // Voice test dialog
+        if (showVoiceTestDialog) {
+            com.tgrobot.mobile.feature.voice.VoiceTestDialog(
+                isListening = state.isVoiceListening,
+                partialText = state.voicePartialText,
+                finalText = state.lastVoiceText,
+                error = state.voiceError,
+                onDismiss = { showVoiceTestDialog = false },
             )
         }
     }
