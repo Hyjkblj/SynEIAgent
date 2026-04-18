@@ -1,4 +1,4 @@
-package com.tgrobot.mobile.core.realtime
+package com.tgrobot.mobile.data
 
 import android.content.Context
 import com.tgrobot.mobile.core.model.RobotConnectionState
@@ -7,6 +7,7 @@ import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.model.RobotSession
 import com.tgrobot.mobile.core.model.TeleopCommand
 import com.tgrobot.mobile.core.model.VoiceIntentPayload
+import com.tgrobot.mobile.core.realtime.SignalingClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,11 +40,22 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-class WebRtcRealtimeTransport(
+/**
+ * 基于 WebRTC 的机器人客户端实现
+ * 
+ * 实现了 [RobotClient] 接口，通过 WebRTC DataChannel 和视频轨道与机器人通信。
+ * 
+ * 内部组件：
+ * - [SignalingClient]: WebSocket 信令客户端
+ * - [PeerConnection]: WebRTC 对等连接
+ * - [DataChannel]: 控制命令通道
+ * - [VideoTrack]: 远程视频流
+ */
+class WebRtcRobotClient(
     context: Context,
     private val signalingClient: SignalingClient = SignalingClient(),
     externalScope: CoroutineScope? = null,
-) : RealtimeTransport {
+) : RobotClient {
     private val appContext = context.applicationContext
     private val scope = externalScope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val eglBase: EglBase = EglBase.create()
@@ -53,6 +65,12 @@ class WebRtcRealtimeTransport(
 
     private val _events = MutableSharedFlow<RobotEvent>(extraBufferCapacity = 64)
     override val events: Flow<RobotEvent> = _events.asSharedFlow()
+
+    private val _videoTracks = MutableStateFlow<Map<String, VideoTrack>>(emptyMap())
+    override val videoTracks: StateFlow<Map<String, VideoTrack>> = _videoTracks.asStateFlow()
+
+    private val _primaryCameraId = MutableStateFlow(DEFAULT_PRIMARY_CAMERA_ID)
+    override val primaryCameraId: StateFlow<String> = _primaryCameraId.asStateFlow()
 
     private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
     override val remoteVideoTrack: StateFlow<VideoTrack?> = _remoteVideoTrack.asStateFlow()
@@ -178,6 +196,15 @@ class WebRtcRealtimeTransport(
         return sendData(payload.toString())
     }
 
+    override fun setPrimaryCamera(cameraId: String) {
+        val normalized = normalizeCameraId(cameraId)
+        if (normalized.isBlank()) {
+            return
+        }
+        _primaryCameraId.value = normalized
+        syncPrimaryVideoTrack()
+    }
+
     private suspend fun disconnectInternal(updateState: Boolean) {
         signalingClient.close()
         cleanupPeer()
@@ -244,9 +271,7 @@ class WebRtcRealtimeTransport(
 
     private fun createOfferConstraints(): MediaConstraints {
         return MediaConstraints().apply {
-            // Request remote camera track from server.
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-            // App currently does not send local mic track.
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
         }
     }
@@ -263,7 +288,6 @@ class WebRtcRealtimeTransport(
         }
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
-            // Required for addTransceiver(RECV_ONLY); Plan-B will crash in native layer.
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }
 
@@ -307,11 +331,11 @@ class WebRtcRealtimeTransport(
 
                 override fun onAddStream(stream: MediaStream) {
                     val track = stream.videoTracks.firstOrNull() ?: return
-                    _remoteVideoTrack.value = track
+                    upsertRemoteVideoTrack(track)
                 }
 
                 override fun onRemoveStream(stream: MediaStream) {
-                    _remoteVideoTrack.value = null
+                    clearRemoteVideoTracks()
                 }
 
                 override fun onDataChannel(channel: DataChannel) {
@@ -325,7 +349,7 @@ class WebRtcRealtimeTransport(
 
                 override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<MediaStream>) {
                     val track = receiver.track() as? VideoTrack ?: return
-                    _remoteVideoTrack.value = track
+                    upsertRemoteVideoTrack(track)
                 }
             },
         )
@@ -551,7 +575,8 @@ class WebRtcRealtimeTransport(
 
         peerConnection?.close()
         peerConnection = null
-        _remoteVideoTrack.value = null
+        clearRemoteVideoTracks()
+        _primaryCameraId.value = DEFAULT_PRIMARY_CAMERA_ID
     }
 
     @Synchronized
@@ -574,6 +599,59 @@ class WebRtcRealtimeTransport(
 
     private fun hasVideoMLine(sdp: String): Boolean {
         return sdp.lineSequence().any { it.startsWith("m=video") }
+    }
+
+    private fun upsertRemoteVideoTrack(track: VideoTrack) {
+        val cameraId = parseCameraIdFromTrack(track)
+        val updated = LinkedHashMap(_videoTracks.value)
+        updated[cameraId] = track
+        _videoTracks.value = updated
+        syncPrimaryVideoTrack()
+    }
+
+    private fun clearRemoteVideoTracks() {
+        _videoTracks.value = emptyMap()
+        _remoteVideoTrack.value = null
+    }
+
+    private fun syncPrimaryVideoTrack() {
+        val tracks = _videoTracks.value
+        if (tracks.isEmpty()) {
+            _remoteVideoTrack.value = null
+            return
+        }
+
+        val currentPrimary = _primaryCameraId.value
+        val resolvedPrimary = when {
+            tracks.containsKey(currentPrimary) -> currentPrimary
+            tracks.containsKey(DEFAULT_PRIMARY_CAMERA_ID) -> DEFAULT_PRIMARY_CAMERA_ID
+            else -> tracks.keys.first()
+        }
+
+        if (resolvedPrimary != currentPrimary) {
+            _primaryCameraId.value = resolvedPrimary
+        }
+        _remoteVideoTrack.value = tracks[resolvedPrimary]
+    }
+
+    private fun parseCameraIdFromTrack(track: VideoTrack): String {
+        val trackId = track.id().orEmpty().trim()
+        if (trackId.startsWith(CAMERA_TRACK_PREFIX)) {
+            val raw = trackId.removePrefix(CAMERA_TRACK_PREFIX)
+            val normalized = normalizeCameraId(raw)
+            if (normalized.isNotBlank()) {
+                return normalized
+            }
+        }
+        return DEFAULT_PRIMARY_CAMERA_ID
+    }
+
+    private fun normalizeCameraId(cameraId: String): String {
+        return cameraId
+            .trim()
+            .lowercase()
+            .replace(Regex("[^a-z0-9_]+"), "_")
+            .trim('_')
     }
 
     private fun emitError(message: String, throwable: Throwable? = null) {
@@ -620,8 +698,14 @@ class WebRtcRealtimeTransport(
 
     private companion object {
         private const val DATA_CHANNEL_LABEL = "control"
+        private const val DEFAULT_PRIMARY_CAMERA_ID = "head"
+        private const val CAMERA_TRACK_PREFIX = "camera_"
     }
 }
+
+// ---------------------------------------------------------------------------
+// 扩展函数：将回调式 SDP 操作转换为挂起函数
+// ---------------------------------------------------------------------------
 
 private suspend fun PeerConnection.createOfferSuspend(
     offerConstraints: MediaConstraints = MediaConstraints(),

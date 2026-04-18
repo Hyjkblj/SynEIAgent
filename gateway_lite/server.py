@@ -11,11 +11,11 @@ from aiortc import RTCPeerConnection, RTCIceCandidate, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole
 
 from .config import GatewayConfig
+from .multi_camera_manager import MultiCameraVideoManager
 from .protocol import CommandKind, RouterOutput, event_payload
 from .ros_client import HttpRosBridgeClient, MockRosBridgeClient, RosBridgeClient
 from .safety import SafetyGuard
 from .state import ControlRouter
-from .video_track import SharedVideoTrack
 
 
 @dataclass(slots=True)
@@ -63,7 +63,9 @@ class GatewayServer:
             voice_max_duration_ms=self.cfg.voice_max_duration_ms,
         )
 
-        self._video_track: SharedVideoTrack | None = SharedVideoTrack() if self.cfg.video_enabled else None
+        self._video_manager: MultiCameraVideoManager | None = (
+            MultiCameraVideoManager() if self.cfg.video_enabled else None
+        )
         self._ros: RosBridgeClient = self._build_ros_client()
 
     def _build_ros_client(self) -> RosBridgeClient:
@@ -130,12 +132,12 @@ class GatewayServer:
                 "voice_max_duration_ms": self.cfg.voice_max_duration_ms,
             },
         }
-        if self._video_track is not None:
-            payload["video"] = self._video_track.get_metrics()
+        if self._video_manager is not None:
+            payload["video"] = self._video_manager.get_aggregate_metrics()
         return web.json_response(payload)
 
     async def _push_frame_handler(self, request: web.Request) -> web.Response:
-        if self._video_track is None:
+        if self._video_manager is None:
             return web.json_response({"ok": False, "error": "video_disabled"}, status=404)
 
         token = self.cfg.video_push_token
@@ -144,9 +146,21 @@ class GatewayServer:
             if got != token:
                 return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
 
+        camera_id = (
+            request.query.get("camera_id")
+            or request.headers.get("X-Camera-Id")
+            or self._video_manager.primary_camera_id
+        )
         body = await request.read()
-        accepted = self._video_track.push_jpeg(body)
-        return web.json_response({"ok": accepted, "video": self._video_track.get_metrics()})
+        accepted = self._video_manager.push_frame(camera_id, body)
+        return web.json_response(
+            {
+                "ok": accepted,
+                "camera_id": camera_id,
+                "available_cameras": self._video_manager.get_available_cameras(),
+                "video": self._video_manager.get_aggregate_metrics(),
+            }
+        )
 
     async def _ws_signal_handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
@@ -235,8 +249,9 @@ class GatewayServer:
     def _setup_peer(self, session: PeerSession, ws: web.WebSocketResponse) -> None:
         pc = session.pc
 
-        if self._video_track is not None:
-            pc.addTrack(self._video_track)
+        if self._video_manager is not None:
+            for track in self._video_manager.get_all_tracks().values():
+                pc.addTrack(track)
 
         @pc.on("datachannel")
         def on_datachannel(channel: Any) -> None:

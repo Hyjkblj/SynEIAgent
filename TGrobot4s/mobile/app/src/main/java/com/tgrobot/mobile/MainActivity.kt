@@ -14,33 +14,100 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tgrobot.mobile.core.realtime.AndroidNetworkMonitor
-import com.tgrobot.mobile.core.realtime.WebRtcRealtimeTransport
-import com.tgrobot.mobile.data.DefaultRobotRepository
+import com.tgrobot.mobile.data.RobotClient
+import com.tgrobot.mobile.data.WebRtcRobotClient
 import com.tgrobot.mobile.data.local.LocalRobotInfoService
-import com.tgrobot.mobile.domain.control.ControlManager
+import com.tgrobot.mobile.domain.control.ControlEngine
+import com.tgrobot.mobile.domain.event.EventDispatcher
+import com.tgrobot.mobile.domain.message.MessageStore
+import com.tgrobot.mobile.domain.session.RobotSessionManager
+import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
+import com.tgrobot.mobile.domain.usecase.DisconnectRobotUseCase
+import com.tgrobot.mobile.domain.usecase.ProcessVoiceIntentUseCase
+import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
+import com.tgrobot.mobile.feature.control.TeleopCoordinator
 import com.tgrobot.mobile.feature.control.TeleopScreen
 import com.tgrobot.mobile.feature.control.TeleopViewModel
 import com.tgrobot.mobile.feature.control.TeleopViewModelFactory
-import com.tgrobot.mobile.feature.voice.VoiceController
+import com.tgrobot.mobile.feature.voice.VoiceModule
+import com.tgrobot.mobile.feature.voice.VoicePipelineController
+import com.tgrobot.mobile.feature.voice.adapter.AospVoiceAdapter
+import com.tgrobot.mobile.feature.voice.asr.AsrRouter
+import com.tgrobot.mobile.feature.voice.asr.VoiceEngineBootstrap
+import com.tgrobot.mobile.feature.voice.asr.VoiceEngineConfig
+import com.tgrobot.mobile.feature.voice.policy.DevicePolicy
 import com.tgrobot.mobile.ui.theme.RobotAppTheme
 
 class MainActivity : ComponentActivity() {
-    private val transport by lazy { WebRtcRealtimeTransport(applicationContext) }
-    private val repository by lazy { DefaultRobotRepository(transport) }
+    private val robotClient: RobotClient by lazy { WebRtcRobotClient(applicationContext) }
     private val networkMonitor by lazy { AndroidNetworkMonitor(applicationContext) }
-    private val controlManager by lazy { ControlManager() }
-    private val voiceController by lazy { VoiceController(this) }
+    private val controlEngine by lazy { ControlEngine() }
     private val voiceIntentParser by lazy { VoiceIntentParser() }
     private val localRobotInfoService by lazy { LocalRobotInfoService() }
+    private val messageStore by lazy { MessageStore() }
+    private val sessionManager by lazy { RobotSessionManager() }
+    private val eventDispatcher by lazy { EventDispatcher(messageStore) }
+
+    // UseCase instances
+    private val connectUseCase by lazy { ConnectRobotUseCase(robotClient, sessionManager) }
+    private val sendControlUseCase by lazy {
+        SendControlCommandUseCase(robotClient, controlEngine)
+    }
+    private val processVoiceUseCase by lazy {
+        ProcessVoiceIntentUseCase(robotClient, voiceIntentParser)
+    }
+
+    // 新语音链路：AospVoiceAdapter -> AsrRouter -> SystemAsrEngine
+    private val devicePolicy by lazy { DevicePolicy(applicationContext) }
+    private val voiceEngineConfig by lazy { VoiceEngineConfig.fromBuildConfig() }
+    private val asrBootstrap by lazy { VoiceEngineBootstrap(applicationContext) }
+    private val asrRouter by lazy {
+        AsrRouter(devicePolicy = devicePolicy).apply {
+            overrideMode = voiceEngineConfig.overrideMode
+        }
+    }
+    private val voicePipeline by lazy {
+        asrBootstrap.register(voiceEngineConfig)
+        VoicePipelineController(
+            adapterProvider = { AospVoiceAdapter(applicationContext) },
+            asrRouter = asrRouter,
+        )
+    }
+    private val voiceModule by lazy {
+        VoiceModule(
+            context = this,
+            processVoiceIntentUseCase = processVoiceUseCase,
+            pipeline = voicePipeline,
+        )
+    }
+
+    // DisconnectRobotUseCase
+    private val disconnectUseCase by lazy {
+        DisconnectRobotUseCase(robotClient, controlEngine, voiceModule, sessionManager)
+    }
+
+    // Coordinator
+    private val coordinator by lazy {
+        TeleopCoordinator(
+            connectUseCase = connectUseCase,
+            disconnectUseCase = disconnectUseCase,
+            sendControlUseCase = sendControlUseCase,
+            controlEngine = controlEngine,
+            voiceModule = voiceModule,
+            localRobotInfoService = localRobotInfoService,
+            messageStore = messageStore,
+            eventDispatcher = eventDispatcher,
+        )
+    }
+
     private val viewModelFactory by lazy {
         TeleopViewModelFactory(
-            repository = repository,
+            coordinator = coordinator,
+            connectUseCase = connectUseCase,
             networkMonitor = networkMonitor,
-            controlManager = controlManager,
-            voiceController = voiceController,
-            voiceIntentParser = voiceIntentParser,
-            localRobotInfoService = localRobotInfoService,
+            controlEngine = controlEngine,
+            sendControlUseCase = sendControlUseCase,
         )
     }
 
@@ -85,6 +152,7 @@ class MainActivity : ComponentActivity() {
                     onJoystickRelease = viewModel::onJoystickRelease,
                     onDraftTextChange = viewModel::updateDraftText,
                     onSendText = viewModel::sendText,
+                    onCameraSelected = viewModel::switchPrimaryCamera,
                 )
             }
         }
