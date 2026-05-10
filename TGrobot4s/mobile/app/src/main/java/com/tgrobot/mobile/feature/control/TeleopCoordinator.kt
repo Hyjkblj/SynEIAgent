@@ -17,6 +17,7 @@ import com.tgrobot.mobile.feature.voice.VoiceModule
 import com.tgrobot.mobile.feature.voice.VoiceModuleEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -175,7 +176,15 @@ class TeleopCoordinator(
         if (text.isBlank()) return
 
         _uiState.update { it.copy(draftText = "") }
-        messageStore.addUserMessage(text)
+        scope.launch {
+            val sent = connectUseCase.robotClient.sendText(text)
+            if (sent) {
+                messageStore.addUserMessage(text)
+            } else {
+                _uiState.update { it.copy(draftText = text) }
+                messageStore.addSystemMessage("Send text failed.")
+            }
+        }
     }
 
     /**
@@ -453,5 +462,6 @@ class TeleopCoordinator(
         controlEngine.stopControlLoop()
         voiceModule.release()
         eventDispatcher.clear()
+        scope.cancel()
     }
 }

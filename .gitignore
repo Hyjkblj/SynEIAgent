@@ -36,3 +36,4 @@ TGrobot4s/mobile/.gradle-home/
 **/log/
 **/cmake-build-*/
 TGrobot4s/robot/
+TGrobot4s/lite_urdf_publish/

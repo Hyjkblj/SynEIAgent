@@ -1,0 +1,4 @@
+# Requirements for rl_policy control mode
+-r requirements-gateway.txt
+openvino>=2024.0
+PyYAML>=6.0

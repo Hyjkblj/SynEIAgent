@@ -1,0 +1,49 @@
+{
+  "robot": {
+    "version": "lite",
+    "prim_path": "/World/robot",
+    "fix_base": false,
+    "max_linear_velocity": 1.0,
+    "max_angular_velocity": 1.5
+  },
+  "ros2": {
+    "cmd_vel_topic": "/cmd_vel",
+    "odom_topic": "/odom",
+    "joint_states_topic": "/joint_states",
+    "odom_frame": "odom",
+    "base_frame": "base_link"
+  },
+  "video": {
+    "enabled": true,
+    "gateway_url": "http://localhost:8088",
+    "push_frame_endpoint": "/push_frame",
+    "camera_id": "main",
+    "fps": 30.0,
+    "width": 640,
+    "height": 480,
+    "jpeg_quality": 85
+  },
+  "simulation": {
+    "headless": false,
+    "physics_dt": 0.0166666666667,
+    "render_dt": 0.0166666666667
+  },
+  "scene": {
+    "ground_size": 20.0,
+    "obstacles": [
+      {
+        "type": "box",
+        "path": "/World/obstacles/box1",
+        "position": [2.0, 0.0, 0.5],
+        "size": [1.0, 1.0, 1.0]
+      },
+      {
+        "type": "cylinder",
+        "path": "/World/obstacles/cyl1",
+        "position": [0.0, 2.0, 0.5],
+        "radius": 0.4,
+        "height": 1.0
+      }
+    ]
+  }
+}
