@@ -1,4 +1,4 @@
-# 语音输入系统重构方案
+b'bbb# 语音输入系统重构方案
 
 ## 一、项目概述
 
@@ -191,24 +191,6 @@ domain/usecase/
 └── ProcessVoiceIntentUseCase.kt      # 保留
 ```
 
-### 3.4 当前开发进度同步（2026-04-17）
-
-| PR | 状态 | 同步说明 |
-|----|------|---------|
-| PR-1 | ✅ 已完成 | `VoiceAdapter`/`AsrEngine`/`AsrResult`/`AudioConfig` 已落地 |
-| PR-2 | ✅ 已完成 | `AsrRegistry` + `AsrRouter` + `DevicePolicy` + `AsrMode` 已落地 |
-| PR-3 | ✅ 已完成 | `AospVoiceAdapter` 完成录音、权限检查、生命周期管理 |
-| PR-4 | ✅ 已完成 | `SystemAsrEngine` 完成 `SpeechRecognizer` 适配 |
-| PR-5 | ✅ 已完成 | `VoicePipelineController` 完成会话编排与终态收口 |
-| PR-6 | ✅ 已完成 | `VoiceModule` 与 `MainActivity` 已接入 pipeline |
-| PR-7 | 🟡 代码已完成，待联调 | `FunAsrEngine` 与 `VolcAsrEngine` 已实现（待服务联调） |
-| PR-8 | 🟡 代码已完成，待联调 | `WhisperEngine` 已实现 HTTP 转录链路 |
-| PR-9 | 🟡 骨架已完成，待联调 | `VoskEngine` 已落地（反射接入 SDK，待模型与真机验证） |
-| PR-10 | ⏳ 未开始 | 厂商专用适配尚未实现 |
-| PR-11 | 🟡 进行中 | 已新增 `VOICE_SYSTEM_USAGE.md`，测试与 API 文档待补齐 |
-
-本次本地验证：`TGrobot4s/mobile` 执行 `:app:compileDebugKotlin` 通过。
-
 ---
 
 ## 四、PR 任务拆分
@@ -228,10 +210,10 @@ feature/voice/
 ```
 
 **任务清单**:
-- [x] 定义 `VoiceAdapter` 接口
-- [x] 定义 `AsrEngine` 接口
-- [x] 定义 `AsrResult` 密封类
-- [x] 定义 `AudioConfig` 配置类
+- [ ] 定义 `VoiceAdapter` 接口
+- [ ] 定义 `AsrEngine` 接口
+- [ ] 定义 `AsrResult` 密封类
+- [ ] 定义 `AudioConfig` 配置类
 
 **验收标准**:
 - 接口编译通过
@@ -253,10 +235,10 @@ feature/voice/asr/
 ```
 
 **任务清单**:
-- [x] 实现 `AsrRegistry` 注册中心
-- [x] 实现 `AsrRouter` 路由决策
-- [x] 实现 `DevicePolicy` 设备策略
-- [x] 定义 `AsrMode` 枚举
+- [ ] 实现 `AsrRegistry` 注册中心
+- [ ] 实现 `AsrRouter` 路由决策
+- [ ] 实现 `DevicePolicy` 设备策略
+- [ ] 定义 `AsrMode` 枚举
 
 **验收标准**:
 - 支持动态注册/注销引擎
@@ -276,10 +258,10 @@ feature/voice/adapter/
 ```
 
 **任务清单**:
-- [x] 实现 `AudioRecord` 采集
-- [x] 实现权限检查
-- [x] 实现麦克风可用性检测
-- [x] 实现资源生命周期管理
+- [ ] 实现 `AudioRecord` 采集
+- [ ] 实现权限检查
+- [ ] 实现麦克风可用性检测
+- [ ] 实现资源生命周期管理
 
 **验收标准**:
 - 标准设备采集正常
@@ -299,10 +281,10 @@ feature/voice/asr/
 ```
 
 **任务清单**:
-- [x] 重构 `VoiceController` 为 `SystemAsrEngine`
-- [x] 适配 `AsrEngine` 接口
-- [x] 处理系统识别回调
-- [x] 错误处理与降级
+- [ ] 重构 `VoiceController` 为 `SystemAsrEngine`
+- [ ] 适配 `AsrEngine` 接口
+- [ ] 处理系统识别回调
+- [ ] 错误处理与降级
 
 **验收标准**:
 - 标准设备识别正常
@@ -322,10 +304,10 @@ feature/voice/
 ```
 
 **任务清单**:
-- [x] 实现采集启动/停止
-- [x] 实现 ASR 会话管理
-- [x] 实现结果流转发
-- [x] 实现错误处理
+- [ ] 实现采集启动/停止
+- [ ] 实现 ASR 会话管理
+- [ ] 实现结果流转发
+- [ ] 实现错误处理
 
 **验收标准**:
 - 流程完整可运行
@@ -345,10 +327,10 @@ feature/voice/
 ```
 
 **任务清单**:
-- [x] 集成 `VoicePipelineController`
-- [x] 保持现有 API 兼容
-- [x] 更新状态管理
-- [x] 更新事件流
+- [ ] 集成 `VoicePipelineController`
+- [ ] 保持现有 API 兼容
+- [ ] 更新状态管理
+- [ ] 更新事件流
 
 **验收标准**:
 - API 向后兼容
@@ -368,10 +350,10 @@ feature/voice/asr/
 ```
 
 **任务清单**:
-- [x] 实现 WebSocket 连接
-- [x] 实现音频流发送
-- [x] 实现结果解析
-- [x] 实现连接管理
+- [ ] 实现 WebSocket 连接
+- [ ] 实现音频流发送
+- [ ] 实现结果解析
+- [ ] 实现连接管理
 
 **验收标准**:
 - WebSocket 连接稳定
@@ -391,9 +373,9 @@ feature/voice/asr/
 ```
 
 **任务清单**:
-- [x] 实现 WebSocket/HTTP 调用
-- [x] 实现音频格式转换
-- [x] 实现结果解析
+- [ ] 实现 WebSocket/HTTP 调用
+- [ ] 实现音频格式转换
+- [ ] 实现结果解析
 
 **验收标准**:
 - 识别准确
@@ -461,7 +443,7 @@ docs/
 **任务清单**:
 - [ ] 单元测试
 - [ ] 集成测试
-- [x] 使用文档
+- [ ] 使用文档
 - [ ] API 文档
 
 **验收标准**:
@@ -628,8 +610,3 @@ scope.launch {
 |------|------|----------|
 | v1.0 | 2024-01-XX | 初始方案 |
 | v1.1 | 2026-04-17 | 根据移动端重构更新架构，调整 PR 任务 |
-| v1.2 | 2026-04-17 | 同步 PR 落地进度，补充本地编译验证结果 |
-| v1.3 | 2026-04-17 | 增加 VoskEngine 骨架实现并同步 PR-9 进度 |
-| v1.4 | 2026-04-17 | 新增 VOICE_SYSTEM_USAGE 使用文档并同步 PR-11 进度 |
-| v1.5 | 2026-04-17 | 增加可配置 ASR 引擎注册（BuildConfig/gradle.properties） |
-| v1.6 | 2026-04-17 | 新增 VolcAsrEngine（火山流式 ASR）并接入配置注册 |

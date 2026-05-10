@@ -7,6 +7,7 @@ import com.tgrobot.mobile.feature.voice.asr.AsrResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -120,6 +121,7 @@ class VoiceModule(
     fun release() {
         pipeline?.release() ?: legacyController?.release()
         processJob?.cancel()
+        scope.cancel()
     }
 
     /**

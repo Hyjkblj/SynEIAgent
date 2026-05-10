@@ -27,17 +27,24 @@ def _get_urdf_import_api():
 
 
 def get_default_urdf_path(version="lite"):
-    """返回本项目内天工 URDF 默认路径（需先执行 fetch_tienkung_urdf）"""
+    """返回本项目内天工 URDF 默认路径"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(script_dir)
-    urdf_root = os.path.join(repo_root, "urdf")
+    
+    # 新的 URDF 路径（x_humanoid_0430_newfeet_newbody_publish）
+    urdf_root = os.path.join(repo_root, "lite_urdf_publish", "x_humanoid_0430_newfeet_newbody_publish")
+    
     if version == "lite":
-        return os.path.join(urdf_root, "lite", "urdf", "humanoid_publish.urdf")
+        return os.path.join(urdf_root, "urdf", "humanoid_publish.urdf")
     if version == "pro":
-        return os.path.join(urdf_root, "pro", "urdf", "humanoid_publish.urdf")
+        # 如果有 pro 版本，更新此路径
+        return os.path.join(urdf_root, "urdf", "humanoid_publish.urdf")
     if version == "tiangong2pro":
-        return os.path.join(urdf_root, "tiangong2pro-urdf", "urdf", "tiangong2.0_pro_urdf.urdf")
-    return os.path.join(urdf_root, "lite", "urdf", "humanoid_publish.urdf")
+        # 如果有 tiangong2pro 版本，更新此路径
+        return os.path.join(urdf_root, "urdf", "humanoid_publish.urdf")
+    
+    # 默认返回 lite 版本
+    return os.path.join(urdf_root, "urdf", "humanoid_publish.urdf")
 
 
 def create_import_config(fix_base=False, self_collision=True, merge_fixed_joints=False):

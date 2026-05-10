@@ -197,10 +197,11 @@ class GatewayServer:
 
                     self._setup_peer(session, ws)
 
-                    offer_sdp = str(data.get("sdp", ""))
+                    offer_sdp = self._normalize_offer_sdp(str(data.get("sdp", "")))
                     await session.pc.setRemoteDescription(
                         RTCSessionDescription(sdp=offer_sdp, type="offer")
                     )
+                    self._bind_outgoing_video_tracks(session)
                     answer = await session.pc.createAnswer()
                     await session.pc.setLocalDescription(answer)
 
@@ -246,27 +247,105 @@ class GatewayServer:
         t.add_done_callback(session.tasks.discard)
         return session
 
+    def _bind_outgoing_video_tracks(self, session: PeerSession) -> None:
+        """
+        Bind outgoing video tracks only after remote offer is set.
+        This avoids creating extra local transceivers that are not present
+        in the offer, which can break answer generation on newer aiortc.
+        """
+        if self._video_manager is None:
+            return
+
+        tracks_by_id = self._video_manager.get_all_tracks()
+        if not tracks_by_id:
+            return
+
+        ordered_camera_ids = [self._video_manager.primary_camera_id] + [
+            camera_id
+            for camera_id in tracks_by_id.keys()
+            if camera_id != self._video_manager.primary_camera_id
+        ]
+        ordered_tracks = [
+            tracks_by_id[camera_id]
+            for camera_id in ordered_camera_ids
+            if camera_id in tracks_by_id
+        ]
+        if not ordered_tracks:
+            return
+
+        video_transceivers = [
+            transceiver
+            for transceiver in session.pc.getTransceivers()
+            if transceiver.kind == "video"
+        ]
+        for index, transceiver in enumerate(video_transceivers):
+            track = ordered_tracks[index] if index < len(ordered_tracks) else None
+            transceiver.sender.replaceTrack(track)
+
+    def _normalize_offer_sdp(self, offer_sdp: str) -> str:
+        """
+        Some clients omit media-level direction attributes.
+        aiortc can treat this as None and fail while generating answer.
+        Add a safe default direction for audio/video media sections.
+        """
+        if not offer_sdp.strip():
+            return offer_sdp
+
+        raw_lines = [line.strip("\r") for line in offer_sdp.split("\n") if line.strip("\r")]
+        session_lines: list[str] = []
+        media_sections: list[list[str]] = []
+
+        for line in raw_lines:
+            if line.startswith("m="):
+                media_sections.append([line])
+            elif media_sections:
+                media_sections[-1].append(line)
+            else:
+                session_lines.append(line)
+
+        if not media_sections:
+            return offer_sdp
+
+        directions = {"a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive"}
+        normalized_sections: list[list[str]] = []
+        for section in media_sections:
+            mline = section[0]
+            is_av = mline.startswith("m=audio") or mline.startswith("m=video")
+            has_direction = any(line in directions for line in section[1:])
+
+            if is_av and not has_direction:
+                section = section + ["a=sendrecv"]
+            normalized_sections.append(section)
+
+        normalized_lines: list[str] = []
+        normalized_lines.extend(session_lines)
+        for section in normalized_sections:
+            normalized_lines.extend(section)
+
+        return "\r\n".join(normalized_lines) + "\r\n"
+
     def _setup_peer(self, session: PeerSession, ws: web.WebSocketResponse) -> None:
         pc = session.pc
 
-        if self._video_manager is not None:
-            for track in self._video_manager.get_all_tracks().values():
-                pc.addTrack(track)
-
         @pc.on("datachannel")
         def on_datachannel(channel: Any) -> None:
+            print(f"[GW-DC] datachannel event fired: label={channel.label!r}, expected={self.cfg.datachannel_label!r}, readyState={getattr(channel, 'readyState', '?')}")
             if channel.label != self.cfg.datachannel_label:
+                print(f"[GW-DC] ignoring channel with label={channel.label!r}")
                 return
             session.dc = channel
+            print(f"[GW-DC] control channel bound to session {session.chat_id}")
 
             @channel.on("close")
             def on_close() -> None:
+                print(f"[GW-DC] channel closed for {session.chat_id}")
                 task = asyncio.create_task(self._close_session(session.chat_id))
                 session.tasks.add(task)
                 task.add_done_callback(session.tasks.discard)
 
             @channel.on("message")
             def on_message(raw: str) -> None:
+                print(f"[GW-DC] on_message fired ({len(raw)} bytes)")
                 task = asyncio.create_task(self._on_dc_message(session, raw))
                 session.tasks.add(task)
                 task.add_done_callback(session.tasks.discard)
@@ -305,11 +384,13 @@ class GatewayServer:
 
         @pc.on("iceconnectionstatechange")
         async def on_ice_state() -> None:
+            print(f"[GW-RTC] ICE state: {pc.iceConnectionState} for {session.chat_id}")
             if pc.iceConnectionState in ("failed", "closed", "disconnected"):
                 await self._close_session(session.chat_id)
 
         @pc.on("connectionstatechange")
         async def on_connection_state() -> None:
+            print(f"[GW-RTC] connection state: {pc.connectionState} for {session.chat_id}")
             if pc.connectionState in ("failed", "closed", "disconnected"):
                 await self._close_session(session.chat_id)
 
@@ -318,19 +399,29 @@ class GatewayServer:
             await asyncio.sleep(0.05)
             out = session.router.tick()
             if out.commands or out.events:
+                print(f"[GW-WD] watchdog: cmds={len(out.commands)}, events={len(out.events)}, state={session.router.state.value}")
                 await self._apply_router_output(session, out)
 
     async def _on_dc_message(self, session: PeerSession, raw: str) -> None:
         if session.closed:
+            print("[GW-DC] message ignored: session closed")
             return
+
+        print(f"[GW-DC] raw message ({len(raw)} bytes): {raw[:200]}")
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            print(f"[GW-DC] JSON parse error: {raw[:100]}")
             session.dc_send({"type": "error", "content": "invalid json"})
             return
 
+        msg_type = data.get("type", "unknown")
+        print(f"[GW-DC] parsed type={msg_type}, keys={list(data.keys())}")
+
         out = session.router.handle(data)
+        print(f"[GW-DC] router output: cmds={len(out.commands)}, events={len(out.events)}, errors={len(out.errors)}, acks={len(out.acks)}")
+
         await self._apply_router_output(session, out)
 
     async def _apply_router_output(self, session: PeerSession, out: RouterOutput) -> None:
@@ -351,12 +442,19 @@ class GatewayServer:
                 session.dc_send({"type": "error", "content": f"command_failed:{cmd.kind.value}:{detail}"})
 
     async def _execute_command(self, cmd) -> tuple[bool, str]:
+        print(f"[GW-CMD] executing {cmd.kind.value} from {cmd.source}")
         if cmd.kind == CommandKind.MOVE:
-            return await self._ros.move(linear=cmd.linear, angular=cmd.angular)
+            result = await self._ros.move(linear=cmd.linear, angular=cmd.angular)
+            print(f"[GW-CMD] move result: {result}")
+            return result
         if cmd.kind == CommandKind.STOP:
-            return await self._ros.stop()
+            result = await self._ros.stop()
+            print(f"[GW-CMD] stop result: {result}")
+            return result
         if cmd.kind == CommandKind.MOTION:
-            return await self._ros.motion(motion_number=cmd.motion_number, active=cmd.active)
+            result = await self._ros.motion(motion_number=cmd.motion_number, active=cmd.active)
+            print(f"[GW-CMD] motion result: {result}")
+            return result
         return False, "unsupported_command"
 
     async def _close_session(self, chat_id: str) -> None:

@@ -5,7 +5,7 @@
 当前版本覆盖你的核心业务：
 - WebRTC 视频流连接
 - DataChannel 控制（摇杆 + 语音意图）
-- ROS 执行（`/cmd_vel` + `/set_motion_number`）
+- ROS 执行（`/cmd_vel` 或 `/joint_command` + `/set_motion_number`）
 
 ## 当前技术架构
 
@@ -22,7 +22,7 @@ Gateway Lite
   -> 转发到 ROS Bridge Lite
 
 ROS Bridge Lite
-  -> POST /move   -> ROS2 /cmd_vel
+  -> POST /move   -> ROS2 /cmd_vel (兼容模式) 或 /joint_command (步态模式)
   -> POST /motion -> ROS2 /set_motion_number
 ```
 
@@ -86,12 +86,43 @@ python -m gateway_lite.main --config config.json
 python -m ros_bridge_lite.main --host 0.0.0.0 --port 8080
 ```
 
+步态关节模式（推荐用于 Isaac Sim 关节驱动验证）：
+
+```bash
+python -m ros_bridge_lite.main --host 0.0.0.0 --port 8080 --control-mode joint_gait --joint-command-topic /joint_command --control-hz 50
+```
+
 4. 健康检查
 
 ```bash
 curl http://127.0.0.1:9100/health
 curl http://127.0.0.1:8080/health
 ```
+
+## Windows 环境隔离启动（推荐）
+
+为了避免 `python` 混用导致依赖冲突（尤其是 Isaac Python 3.11 与 ROS2 Jazzy Python 3.12），推荐使用仓库内的隔离脚本（CMD）：
+
+1. 先做隔离检查
+
+```bat
+scripts\check_env_isolation.cmd
+```
+
+2. 在独立 CMD 窗口启动 ROS Bridge
+
+```bat
+scripts\start_ros_bridge_isolated.cmd
+```
+
+3. 在另一个独立 CMD 窗口启动 Gateway
+
+```bat
+scripts\start_gateway_isolated.cmd
+```
+
+完整说明见：
+- `docs/WINDOWS_ENV_ISOLATION.md`
 
 ## 视频流适配联调
 

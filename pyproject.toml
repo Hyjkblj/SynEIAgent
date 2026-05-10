@@ -1,4 +1,4 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -19,6 +19,16 @@ dependencies = [
 [project.scripts]
 syneiagent-gateway = "gateway_lite.main:main"
 syneiagent-ros-bridge = "ros_bridge_lite.main:main"
+
+[project.optional-dependencies]
+rl = [
+  "openvino>=2024.0",
+  "PyYAML>=6.0",
+]
+test = [
+  "pytest>=7.0",
+  "hypothesis>=6.0",
+]
 
 [tool.setuptools]
 packages = ["gateway_lite", "ros_bridge_lite"]

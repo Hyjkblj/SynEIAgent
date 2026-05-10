@@ -4,22 +4,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.tgrobot.mobile.core.model.RobotConnectionState
-import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.core.realtime.NetworkMonitor
 import com.tgrobot.mobile.domain.control.ControlEngine
 import com.tgrobot.mobile.domain.usecase.ConnectRobotUseCase
 import com.tgrobot.mobile.domain.usecase.SendControlCommandUseCase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * Teleop ViewModel
- * 
- * 精简后的 ViewModel，仅负责：
- * - 暴露 UI 状态
- * - 委托业务逻辑给 Coordinator
- * - 观察数据源更新状态
+ *
+ * Keeps UI bindings and delegates domain work to coordinator/use cases.
  */
 class TeleopViewModel(
     private val coordinator: TeleopCoordinator,
@@ -30,6 +28,7 @@ class TeleopViewModel(
 ) : ViewModel() {
 
     val uiState = coordinator.uiState
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
         observeRepository()
@@ -94,44 +93,6 @@ class TeleopViewModel(
         viewModelScope.launch {
             connectUseCase.robotClient.events.collect { event ->
                 coordinator.handleRobotEvent(event)
-                // 处理消息类型事件
-                when (event) {
-                    is RobotEvent.Message -> {
-                        coordinator.messageStore.addRobotMessage(event.content)
-                    }
-                    is RobotEvent.Error -> {
-                        coordinator.messageStore.addSystemMessage("Error: ${event.content}")
-                    }
-                    is RobotEvent.Alert -> {
-                        val codePart = event.errorCode?.let { " code=$it" } ?: ""
-                        coordinator.messageStore.addSystemMessage("Alert[${event.level}]$codePart ${event.content}")
-                    }
-                    is RobotEvent.Transcription -> {
-                        coordinator.messageStore.addSystemMessage("Transcription: ${event.content}")
-                    }
-                    is RobotEvent.GatewayEvent -> {
-                        handleGatewayEvent(event)
-                    }
-                    else -> Unit
-                }
-            }
-        }
-    }
-
-    private fun handleGatewayEvent(event: RobotEvent.GatewayEvent) {
-        when (event.name) {
-            "state_changed" -> {
-                val oldState = event.oldState ?: "unknown"
-                val newState = event.state ?: "unknown"
-                coordinator.messageStore.addSystemMessage("Gateway state: $oldState -> $newState")
-            }
-            "command_applied" -> {
-                val kind = event.kind ?: "unknown"
-                val source = event.source ?: "unknown"
-                coordinator.messageStore.addSystemMessage("Command applied: $kind from $source")
-            }
-            else -> {
-                coordinator.messageStore.addSystemMessage("Gateway event: ${event.name}")
             }
         }
     }
@@ -146,8 +107,8 @@ class TeleopViewModel(
 
     override fun onCleared() {
         coordinator.release()
-        runBlocking {
-            connectUseCase.robotClient.disconnect()
+        cleanupScope.launch {
+            runCatching { connectUseCase.robotClient.disconnect() }
         }
         super.onCleared()
     }
@@ -175,3 +136,4 @@ class TeleopViewModelFactory(
         ) as T
     }
 }
+

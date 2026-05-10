@@ -20,11 +20,19 @@ class HttpRosBridgeClient:
     timeout_s: float = 0.8
 
     async def move(self, linear: float, angular: float) -> tuple[bool, str]:
-        payload = {"linear": float(linear), "angular": float(angular)}
+        v_linear = float(linear)
+        v_angular = float(angular)
+        # Keep both key styles for compatibility with old/new ros_bridge_lite.
+        payload = {
+            "linear": v_linear,
+            "angular": v_angular,
+            "linear_x": v_linear,
+            "angular_z": v_angular,
+        }
         return await self._post("/move", payload)
 
     async def stop(self) -> tuple[bool, str]:
-        payload = {"linear": 0.0, "angular": 0.0}
+        payload = {"linear": 0.0, "angular": 0.0, "linear_x": 0.0, "angular_z": 0.0}
         return await self._post("/move", payload)
 
     async def motion(self, motion_number: int, active: bool = True) -> tuple[bool, str]:

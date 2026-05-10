@@ -2,61 +2,48 @@ package com.tgrobot.mobile.domain.event
 
 import com.tgrobot.mobile.core.model.RobotEvent
 import com.tgrobot.mobile.domain.message.MessageStore
-import com.tgrobot.mobile.domain.message.UiMessageRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
 /**
- * 事件分发器
- * 
- * 统一分发机器人事件到各个处理器。
- * 
- * 职责：
- * - 接收原始事件
- * - 分发到注册的处理器
- * - 处理通用事件（消息、错误等）
+ * Dispatches robot events through a single serial consumer.
  */
 class EventDispatcher(
     private val messageStore: MessageStore,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
 ) {
-    private val _handlers = mutableListOf<RobotEventHandler>()
+    private val handlers = mutableListOf<RobotEventHandler>()
+    private val eventQueue = Channel<RobotEvent>(capacity = Channel.UNLIMITED)
     private val _processedEvents = MutableSharedFlow<ProcessedEvent>(extraBufferCapacity = 64)
     val processedEvents: SharedFlow<ProcessedEvent> = _processedEvents.asSharedFlow()
 
     private var deltaBuffer = StringBuilder()
-
-    /**
-     * 注册事件处理器
-     */
-    fun registerHandler(handler: RobotEventHandler) {
-        _handlers.add(handler)
-    }
-
-    /**
-     * 注销事件处理器
-     */
-    fun unregisterHandler(handler: RobotEventHandler) {
-        _handlers.remove(handler)
-    }
-
-    /**
-     * 分发事件
-     */
-    fun dispatch(event: RobotEvent) {
-        scope.launch {
-            // 先调用注册的处理器
-            _handlers.forEach { handler ->
+    private val consumeJob: Job = scope.launch {
+        for (event in eventQueue) {
+            handlers.toList().forEach { handler ->
                 handler.handle(event)
             }
-
-            // 处理通用事件
             handleCommonEvent(event)
         }
+    }
+
+    fun registerHandler(handler: RobotEventHandler) {
+        handlers.add(handler)
+    }
+
+    fun unregisterHandler(handler: RobotEventHandler) {
+        handlers.remove(handler)
+    }
+
+    fun dispatch(event: RobotEvent) {
+        eventQueue.trySend(event)
     }
 
     private suspend fun handleCommonEvent(event: RobotEvent) {
@@ -97,7 +84,7 @@ class EventDispatcher(
                     ProcessedEvent.JoystickAck(
                         ts = event.ts,
                         reason = event.reason,
-                    )
+                    ),
                 )
             }
 
@@ -106,7 +93,7 @@ class EventDispatcher(
                     ProcessedEvent.ControlAck(
                         ts = event.ts,
                         reason = event.reason,
-                    )
+                    ),
                 )
             }
 
@@ -123,11 +110,13 @@ class EventDispatcher(
                 val newState = event.state ?: "unknown"
                 messageStore.addSystemMessage("Gateway state: $oldState -> $newState")
             }
+
             "command_applied" -> {
                 val kind = event.kind ?: "unknown"
                 val source = event.source ?: "unknown"
                 messageStore.addSystemMessage("Command applied: $kind from $source")
             }
+
             else -> {
                 messageStore.addSystemMessage("Gateway event: ${event.name}")
             }
@@ -141,18 +130,15 @@ class EventDispatcher(
         deltaBuffer = StringBuilder()
     }
 
-    /**
-     * 清理资源
-     */
     fun clear() {
-        _handlers.clear()
+        handlers.clear()
         deltaBuffer = StringBuilder()
+        eventQueue.close()
+        consumeJob.cancel()
+        scope.cancel()
     }
 }
 
-/**
- * 处理后的事件
- */
 sealed interface ProcessedEvent {
     data class Message(val content: String) : ProcessedEvent
     data class Transcription(val content: String) : ProcessedEvent
@@ -162,3 +148,4 @@ sealed interface ProcessedEvent {
     data class ControlAck(val ts: Long?, val reason: String) : ProcessedEvent
     data class Gateway(val name: String, val state: String?, val kind: String?) : ProcessedEvent
 }
+
