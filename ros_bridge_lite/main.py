@@ -32,7 +32,7 @@ class BridgeConfig:
     set_motion_service: str = "/set_motion_number"
     control_mode: str = "cmd_vel"  # cmd_vel | joint_gait
     control_hz: float = 50.0
-    command_timeout_ms: int = 350
+    command_timeout_ms: int = 3000
     stop_ramp_time_ms: int = 260
     gait_joint_names: tuple[str, ...] = DEFAULT_GAIT_JOINT_NAMES
 

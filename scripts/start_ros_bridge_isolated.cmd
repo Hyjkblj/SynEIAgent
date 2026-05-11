@@ -10,10 +10,14 @@ set "HOST=0.0.0.0"
 set "PORT=8080"
 set "CMD_VEL_TOPIC=/cmd_vel"
 set "JOINT_COMMAND_TOPIC=/joint_command"
-set "CONTROL_MODE=joint_gait"
+set "CONTROL_MODE=rl_policy"
 set "CONTROL_HZ=50"
 set "NODE_NAME=gateway_lite_bridge"
 set "SET_MOTION_SERVICE=/set_motion_number"
+set "POLICY_MODEL_XML=%PROJECT_ROOT%\DeployTienkug\Deploy_Tienkung\rl_control_new\config\policy\policy1107.xml"
+set "POLICY_MODEL_BIN=%PROJECT_ROOT%\DeployTienkug\Deploy_Tienkung\rl_control_new\config\policy\policy1107.bin"
+set "POLICY_CONFIG=%PROJECT_ROOT%\DeployTienkug\Deploy_Tienkung\rl_control_new\config\tg22_config.yaml"
+set "ISAAC_SIM_URL=http://localhost:9200"
 
 set "PYTHONNOUSERSITE=1"
 set "PYTHONPATH="
@@ -81,5 +85,9 @@ if errorlevel 1 (
 echo [INFO] aiohttp+rclpy ok
 
 echo [INFO] Starting ROS Bridge Lite on 8080 (mode=%CONTROL_MODE%)...
-"%ROS2_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE%
+set "RL_ARGS="
+if "%CONTROL_MODE%"=="rl_policy" (
+    set "RL_ARGS=--policy-model-xml %POLICY_MODEL_XML% --policy-model-bin %POLICY_MODEL_BIN% --policy-config %POLICY_CONFIG% --simulation --isaac-sim-url %ISAAC_SIM_URL%"
+)
+"%ROS2_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE% %RL_ARGS%
 exit /b %errorlevel%
