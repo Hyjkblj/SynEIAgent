@@ -38,14 +38,37 @@ URDF_TO_BODYIDMAP: dict[str, str] = {
     "shoulder_roll_l_joint": "l_shoulder_roll",
     "shoulder_yaw_l_joint": "l_shoulder_yaw",
     "elbow_l_joint": "l_elbow",
+    "elbow_pitch_l_joint": "l_elbow",
     # Right arm
     "shoulder_pitch_r_joint": "r_shoulder_pitch",
     "shoulder_roll_r_joint": "r_shoulder_roll",
     "shoulder_yaw_r_joint": "r_shoulder_yaw",
     "elbow_r_joint": "r_elbow",
+    "elbow_pitch_r_joint": "r_elbow",
 }
 
-BODYIDMAP_TO_URDF: dict[str, str] = {v: k for k, v in URDF_TO_BODYIDMAP.items()}
+BODYIDMAP_TO_URDF: dict[str, str] = {
+    "l_hip_roll": "hip_roll_l_joint",
+    "l_hip_pitch": "hip_pitch_l_joint",
+    "l_hip_yaw": "hip_yaw_l_joint",
+    "l_knee": "knee_pitch_l_joint",
+    "l_ankle_pitch": "ankle_pitch_l_joint",
+    "l_ankle_roll": "ankle_roll_l_joint",
+    "r_hip_roll": "hip_roll_r_joint",
+    "r_hip_pitch": "hip_pitch_r_joint",
+    "r_hip_yaw": "hip_yaw_r_joint",
+    "r_knee": "knee_pitch_r_joint",
+    "r_ankle_pitch": "ankle_pitch_r_joint",
+    "r_ankle_roll": "ankle_roll_r_joint",
+    "l_shoulder_pitch": "shoulder_pitch_l_joint",
+    "l_shoulder_roll": "shoulder_roll_l_joint",
+    "l_shoulder_yaw": "shoulder_yaw_l_joint",
+    "l_elbow": "elbow_pitch_l_joint",
+    "r_shoulder_pitch": "shoulder_pitch_r_joint",
+    "r_shoulder_roll": "shoulder_roll_r_joint",
+    "r_shoulder_yaw": "shoulder_yaw_r_joint",
+    "r_elbow": "elbow_pitch_r_joint",
+}
 
 
 def _can_id_for_name(bodyidmap_name: str) -> int:

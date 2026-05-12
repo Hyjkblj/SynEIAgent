@@ -101,7 +101,19 @@ curl http://127.0.0.1:8080/health
 
 ## Windows 环境隔离启动（推荐）
 
-为了避免 `python` 混用导致依赖冲突（尤其是 Isaac Python 3.11 与 ROS2 Jazzy Python 3.12），推荐使用仓库内的隔离脚本（CMD）：
+为了避免 `python` 混用导致依赖冲突，推荐把运行时拆成三层：
+
+- `9200 Isaac Sim`：继续使用 Isaac 自带 `kit/python`
+- `8080 ROS Bridge Lite`：使用专门的 `conda` HTTP RL 环境
+- `9100 Gateway Lite`：与 `8080` 共用同一个 `conda` HTTP RL 环境
+
+先准备 HTTP RL 的独立环境：
+
+```bat
+scripts\create_http_rl_conda_env.cmd
+```
+
+然后再用仓库内的隔离脚本（CMD）：
 
 1. 先做隔离检查
 
@@ -120,6 +132,17 @@ scripts\start_ros_bridge_isolated.cmd
 ```bat
 scripts\start_gateway_isolated.cmd
 ```
+
+4. 确认 `9200 Isaac Sim` 也按 Lite 执行层配置启动
+
+```powershell
+.\start_isaac_headless.ps1
+curl http://127.0.0.1:9200/health
+```
+
+至少确认：
+- `gain_profile` 是 `policy_config` 或 `official_lite`
+- `limit_profile` 是 `official_lite`
 
 完整说明见：
 - `docs/WINDOWS_ENV_ISOLATION.md`

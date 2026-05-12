@@ -60,6 +60,19 @@ def find_robot_prim():
         return None
 
 
+def resolve_articulation_root_path(prim_path):
+    """尽量解析到真正带 ArticulationRootAPI 的 prim。"""
+    if not prim_path:
+        return prim_path
+    try:
+        from isaacsim.core.utils.prims import get_articulation_root_api_prim_path
+
+        resolved = get_articulation_root_api_prim_path(str(prim_path))
+        return str(resolved or prim_path)
+    except Exception:
+        return prim_path
+
+
 def load_policy_gains(policy_config_path=None):
     """从 tg22_config.yaml 加载逐关节 PD 增益"""
     if policy_config_path is None:
@@ -121,6 +134,11 @@ def start(robot_prim_path=None, port=9200, policy_config=None):
         print(f"  尝试过的路径: {_ROBOT_PRIM_CANDIDATES}")
         print(f"  或手动指定: start(robot_prim_path='/World/your_robot')")
         return None
+
+    resolved_robot_prim_path = resolve_articulation_root_path(robot_prim_path)
+    if resolved_robot_prim_path != robot_prim_path:
+        print(f"[Control] Resolved articulation root: {resolved_robot_prim_path}")
+    robot_prim_path = resolved_robot_prim_path
 
     print(f"[Control] Robot prim: {robot_prim_path}")
 
@@ -185,24 +203,8 @@ def start(robot_prim_path=None, port=9200, policy_config=None):
                         continue
 
                 print(f"[Control] Articulation created, {len(controller._joint_names)} joints")
-
-                # 注册物理回调：应用关节目标 + 更新 IMU
-                # 注意：只写不读！get_joint_positions() 在物理步进期间禁止
-                try:
-                    import omni.physx
-                    physx = omni.physx.get_physx_interface()
-
-                    def _on_physics_step(dt):
-                        controller._apply_joint_targets()
-                        controller._update_imu(dt)
-
-                    physx.subscribe_physics_step_events(_on_physics_step)
-                    print("[Control] Physics callback registered (targets + IMU)")
-                except Exception as e:
-                    print(f"[Control] Physics callback failed: {e}")
-
-                # 启动控制线程：仅应用目标（纯写操作，无竞态风险）
-                # get_joint_positions() 有竞态风险，不在控制线程中调用
+                # 启动控制线程：在物理步进外刷新关节缓存并推进控制器，
+                # 让 /move 与 /joint_command 共享同一套命令仲裁逻辑。
                 def _control_loop():
                     import omni.timeline
                     dt = 1.0 / 50.0  # 50Hz
@@ -212,7 +214,8 @@ def start(robot_prim_path=None, port=9200, policy_config=None):
                             if not timeline.is_playing():
                                 time.sleep(0.5)
                                 continue
-                            controller._apply_joint_targets()
+                            controller.refresh_joint_state_cache(dt)
+                            controller.update(dt)
                         except Exception:
                             pass
                         time.sleep(dt)

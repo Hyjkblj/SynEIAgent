@@ -42,7 +42,8 @@ class HttpRosBridgeClient:
     async def _post(self, path: str, body: dict) -> tuple[bool, str]:
         url = f"{self.base_url.rstrip('/')}{path}"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            # Keep loopback bridge calls off any ambient proxy or env-based routing.
+            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=False) as client:
                 resp = await client.post(url, json=body)
             if resp.status_code >= 400:
                 return False, f"http_{resp.status_code}"

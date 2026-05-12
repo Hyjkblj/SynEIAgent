@@ -11,9 +11,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# --- Rotation matrix helpers ---
-
-
 def rot_x(angle: float) -> NDArray[np.float64]:
     c, s = math.cos(angle), math.sin(angle)
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
@@ -30,17 +27,17 @@ def rot_z(angle: float) -> NDArray[np.float64]:
 
 
 def euler_zyx_to_matrix(yaw: float, pitch: float, roll: float) -> NDArray[np.float64]:
-    """ZYX Euler angles → rotation matrix (R = Rz * Ry * Rx)."""
+    """ZYX Euler angles to rotation matrix (R = Rz * Ry * Rx)."""
     return rot_z(yaw) @ rot_y(pitch) @ rot_x(roll)
 
 
 def euler_xyz_to_matrix(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
-    """XYZ Euler angles → rotation matrix (R = Rx * Ry * Rz)."""
+    """XYZ Euler angles to rotation matrix (R = Rx * Ry * Rz)."""
     return rot_x(roll) @ rot_y(pitch) @ rot_z(yaw)
 
 
 def matrix_to_euler_xyz(r: NDArray[np.float64]) -> tuple[float, float, float]:
-    """Rotation matrix → XYZ Euler angles (roll, pitch, yaw)."""
+    """Rotation matrix to XYZ Euler angles (roll, pitch, yaw)."""
     pitch = math.asin(np.clip(r[0, 2], -1.0, 1.0))
     cp = math.cos(pitch)
     if abs(cp) < 1e-10:
@@ -56,14 +53,10 @@ def matrix_to_euler_xyz(r: NDArray[np.float64]) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
-# --- Low-pass filter (2nd order Butterworth) ---
-
-
 class LowPassFilter:
     """2nd order Butterworth low-pass filter (port of BasicFunction.cpp)."""
 
     def __init__(self, cutoff_hz: float, damping: float, dt: float, n: int = 3) -> None:
-        self._n = n
         self._sig_in_1 = np.zeros(n, dtype=np.float64)
         self._sig_in_2 = np.zeros(n, dtype=np.float64)
         self._sig_out_1 = np.zeros(n, dtype=np.float64)
@@ -99,17 +92,18 @@ class LowPassFilter:
         return sig_out
 
 
-# --- IMU Processor ---
-
-
 class IMUProcessor:
-    """Process raw IMU data into RL policy observations.
-
-    Port of FSMStateImpl.cpp lines 189-216.
-    """
+    """Process raw IMU data into RL policy observations."""
 
     def __init__(self, cutoff_hz: float = 30.0, damping: float = 0.707, dt: float = 0.02) -> None:
         self._omega_filter = LowPassFilter(cutoff_hz, damping, dt, n=3)
+
+    @staticmethod
+    def _build_r_xyz_omega(roll: float, pitch: float) -> NDArray[np.float64]:
+        r_xyz_omega = np.eye(3, dtype=np.float64)
+        r_xyz_omega[1, :] = rot_x(roll)[1, :]
+        r_xyz_omega[2, :] = (rot_x(roll) @ rot_y(pitch))[2, :]
+        return r_xyz_omega
 
     def process(
         self,
@@ -118,37 +112,18 @@ class IMUProcessor:
         roll: float,
         omega: NDArray[np.float64],
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Process IMU data.
-
-        Args:
-            yaw, pitch, roll: IMU Euler angles (radians)
-            omega: angular velocity [wx, wy, wz] in IMU frame
-
-        Returns:
-            (ang_vel_world, gravity_dir) where:
-            - ang_vel_world: 3D angular velocity in world frame (filtered)
-            - gravity_dir: 3D gravity direction in body frame
-        """
-        # Zero yaw (don't use absolute heading)
+        """Process IMU data using the same math as the C++ SDK."""
+        _ = yaw
         ypr = np.array([0.0, pitch, roll], dtype=np.float64)
+        ned_r_ypr = euler_zyx_to_matrix(ypr[0], ypr[1], ypr[2])
+        rpy = np.array(matrix_to_euler_xyz(ned_r_ypr), dtype=np.float64)
 
-        # ZYX → rotation matrix → XYZ Euler angles
-        r_zyx = euler_zyx_to_matrix(ypr[0], ypr[1], ypr[2])
-        rpy = np.array(matrix_to_euler_xyz(r_zyx), dtype=np.float64)
+        r_xyz_omega = self._build_r_xyz_omega(rpy[0], rpy[1])
+        q_dot = r_xyz_omega.T @ ned_r_ypr @ omega
 
-        # Build R_xyz_omega for angular velocity transformation
-        r_xyz_omega = np.eye(3, dtype=np.float64)
-        r_xyz_omega[1, :] = rot_x(rpy[0])[1, :]
-        r_xyz_omega[2, :] = (rot_x(rpy[0]) @ rot_y(rpy[1]))[2, :]
-
-        # Angular velocity: IMU frame → world frame
-        ang_vel = r_zyx.T @ r_xyz_omega @ omega
-
-        # Low-pass filter
+        rb_w = euler_xyz_to_matrix(rpy[0], rpy[1], rpy[2])
+        ang_vel = rb_w.T @ r_xyz_omega @ q_dot
         ang_vel_filtered = self._omega_filter.filter(ang_vel)
 
-        # Gravity direction (negative of body z-axis in world frame)
-        r_xyz_w = euler_xyz_to_matrix(rpy[0], rpy[1], rpy[2])
-        gravity_dir = -r_xyz_w[:, 2]
-
+        gravity_dir = -rb_w.T[:, 2]
         return ang_vel_filtered, gravity_dir

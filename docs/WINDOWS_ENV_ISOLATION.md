@@ -1,40 +1,61 @@
 # Windows Environment Isolation (CMD)
 
-This project uses two isolated Python runtimes on Windows:
+Current recommendation on Windows is a three-layer runtime split:
 
-1. Gateway runtime (Isaac/Conda):
-`D:\isaaclab_env\python.exe`
-2. ROS bridge runtime (Pixi + ROS2 Jazzy):
-`C:\pixi_ws\.pixi\envs\default\python.exe` with `D:\Develop\ros2-jazzy-20260128-windows-release-amd64\ros2-windows\setup.bat`
+1. `9200 Isaac Sim`
+Use Isaac's bundled `kit/python` runtime only.
 
-Do not run both services with plain `python` from an unknown shell.
+2. `8080 ROS Bridge Lite`
+Use a dedicated `conda` env for the HTTP RL path.
+
+3. `9100 Gateway Lite`
+Use the same dedicated `conda` env as `8080`.
+
+The legacy `Pixi + ROS2 Jazzy` runtime is kept only for the old ROS2 HTTP RL path and should not be the default path for simulation debugging.
+
+## 0. Create the HTTP RL conda env
+
+Open CMD in repo root and run:
+
+```bat
+scripts\create_http_rl_conda_env.cmd
+```
+
+This creates or updates:
+- env name: `syn-ei-http-rl`
+- env file: `environment-http-rl.yml`
+
+Defaults:
+- the scripts auto-resolve `CONDA_BASE` from `conda info --base`
+- `HTTP_RL_ENV_NAME` defaults to `syn-ei-http-rl`
+- `HTTP_RL_PYTHON` defaults to `%CONDA_BASE%\envs\%HTTP_RL_ENV_NAME%\python.exe`
 
 If your paths are different, set env vars before running scripts:
 
 ```bat
 set PROJECT_ROOT=D:\Develop\Project\SynEIAgent
+set CONDA_BASE=D:\Develop\anaconda3
+set HTTP_RL_ENV_NAME=syn-ei-http-rl
+set HTTP_RL_PYTHON=D:\Develop\anaconda3\envs\syn-ei-http-rl\python.exe
 set ROS2_ROOT=D:\Develop\ros2-jazzy-20260128-windows-release-amd64\ros2-windows
 set ROS2_PYTHON=C:\pixi_ws\.pixi\envs\default\python.exe
-set ISAAC_ENV_PYTHON=D:\isaaclab_env\python.exe
 ```
 
 ## 1. One-time check
-
-Open CMD in repo root and run:
 
 ```bat
 scripts\check_env_isolation.cmd
 ```
 
 Expected:
-- Gateway env prints `python=D:\isaaclab_env\python.exe`
-- ROS env prints `python=C:\pixi_ws\.pixi\envs\default\python.exe`
+- HTTP RL env prints the `python=` path inside `syn-ei-http-rl`
+- It can import `aiohttp`, `aiortc`, `httpx`, `openvino`, `yaml`, `numpy`, and Pillow
 - Final line: `[OK] Environment isolation check passed.`
-- The RTI warning can be ignored if you use default DDS (`rmw_fastrtps_cpp` or `rmw_cyclonedds_cpp`).
+- The ROS2 section is optional and only matters when you force the old ROS2 HTTP RL path
 
 ## 2. Start services in separate CMD windows
 
-Window A (ROS bridge):
+Window A (`8080` ROS bridge):
 
 ```bat
 cd /d D:\Develop\Project\SynEIAgent
@@ -42,10 +63,11 @@ scripts\start_ros_bridge_isolated.cmd
 ```
 
 Expected:
-- `ROS Bridge Lite ready on http://0.0.0.0:8080`
-- If already running, script will print `ROS Bridge is already running on port 8080`.
+- `HTTP RL no-ROS2 mode enabled`
+- `Starting ROS Bridge Lite on 8080 via HTTP RL transport`
+- If already running, the script prints `ROS Bridge is already running on port 8080`
 
-Window B (Gateway):
+Window B (`9100` Gateway):
 
 ```bat
 cd /d D:\Develop\Project\SynEIAgent
@@ -53,8 +75,9 @@ scripts\start_gateway_isolated.cmd
 ```
 
 Expected:
-- Gateway health: `http://127.0.0.1:9100/health`
-- If already running, script will print `Gateway is already running on port 9100`.
+- the detected python path points to `syn-ei-http-rl`
+- `Starting Gateway Lite on 9100`
+- If already running, the script prints `Gateway is already running on port 9100`
 
 ## 3. Verify the chain
 
@@ -63,19 +86,49 @@ In a third CMD:
 ```bat
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:9100/health
-curl http://127.0.0.1:9100/status
+curl http://127.0.0.1:9200/health
 ```
 
 Check:
-- ROS bridge shows `ros_enabled: true`
-- Gateway is healthy and has active sessions after app connects
+- `8080` is healthy and `last_command_ok` stays true after commands
+- `9100` is healthy and exposes the WebRTC/DataChannel session state
+- `9200` is healthy before running long RL diagnostics
+- for Lite RL validation, `9200/health` should report `gain_profile=policy_config`
+- for Lite RL validation, `9200/health` should report `limit_profile=official_lite`
 
-## 4. If ROS bridge says aiohttp missing
+If you use the repo root launcher:
 
-Install only into the ROS2 runtime:
-
-```bat
-C:\pixi_ws\.pixi\envs\default\python.exe -m pip install aiohttp
+```powershell
+.\start_isaac_headless.ps1
 ```
 
-Do not install ROS bridge dependencies into `D:\isaaclab_env` unless needed by Gateway.
+it now enables the official Lite actuator gain and effort/velocity limit
+profiles by default. To A/B test back to policy-config gains, override before
+launch:
+
+```powershell
+$env:ISAAC_ACTUATOR_GAIN_PROFILE = ""
+.\start_isaac_headless.ps1
+```
+
+To A/B test without the explicit limit profile, override before launch:
+
+```powershell
+$env:ISAAC_ACTUATOR_LIMIT_PROFILE = ""
+.\start_isaac_headless.ps1
+```
+
+## 4. Legacy ROS2 path
+
+Only if you explicitly need the old ROS2 route:
+
+```bat
+set FORCE_ROS2_HTTP_RL=1
+scripts\start_ros_bridge_isolated.cmd
+```
+
+That path still depends on:
+- `C:\pixi_ws\.pixi\envs\default\python.exe`
+- `D:\Develop\ros2-jazzy-20260128-windows-release-amd64\ros2-windows\setup.bat`
+
+Keep ROS2-only dependencies in the ROS2 runtime. Do not mix them back into the HTTP RL conda env unless a dependency is truly shared.
