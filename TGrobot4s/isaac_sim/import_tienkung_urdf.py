@@ -57,7 +57,9 @@ def create_import_config(fix_base=False, self_collision=True, merge_fixed_joints
     cfg.fix_base = fix_base
     cfg.self_collision = self_collision
     cfg.merge_fixed_joints = merge_fixed_joints
-    cfg.convex_decomp = False
+    # Prefer convex decomposition for mesh contacts so the feet/ground
+    # interaction is more stable after the startup hold is released.
+    cfg.convex_decomp = True
     cfg.distance_scale = 1.0
     cfg.density = 0.0
     cfg.make_default_prim = True
@@ -76,6 +78,7 @@ def import_tienkung(urdf_path, fix_base=False, self_collision=True, dest_path=No
 
     Returns:
         (success: bool, prim_path: str)
+        prim_path 优先返回带 ArticulationRootAPI 的 prim，避免后续包裹到导入根节点而不是可运动根。
     """
     try:
         import omni.kit.commands
@@ -111,12 +114,14 @@ def import_tienkung(urdf_path, fix_base=False, self_collision=True, dest_path=No
             urdf_path=urdf_path,
             import_config=import_config,
             dest_path=dest_path,
+            get_articulation_root=True,
         )
     else:
         result, prim_path = omni.kit.commands.execute(
             "URDFImportRobot",
             urdf_robot=robot_model,
             import_config=import_config,
+            get_articulation_root=True,
         )
 
     return result, prim_path

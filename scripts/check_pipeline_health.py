@@ -19,9 +19,24 @@ import httpx
 
 def check_gateway(url: str = "http://127.0.0.1:9100") -> dict:
     try:
-        r = httpx.get(f"{url}/health", timeout=2)
+        r = httpx.get(f"{url}/status", timeout=2)
         data = r.json()
-        return {"ok": True, "sessions": data.get("sessions", 0), "data": data}
+        peers = data.get("peers", {}) if isinstance(data.get("peers"), dict) else {}
+        open_datachannels = sum(
+            1 for peer in peers.values()
+            if isinstance(peer, dict) and str(peer.get("dc_state", "")).lower() == "open"
+        )
+        connected_peers = sum(
+            1 for peer in peers.values()
+            if isinstance(peer, dict) and str(peer.get("connection_state", "")).lower() == "connected"
+        )
+        return {
+            "ok": True,
+            "sessions": int(data.get("sessions", 0)),
+            "connected_peers": connected_peers,
+            "open_datachannels": open_datachannels,
+            "data": data,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -64,6 +79,9 @@ def check_isaac_sim(url: str = "http://127.0.0.1:9200") -> dict:
             "joints": joints,
             "positions_count": len(positions),
             "non_zero_positions": non_zero,
+            "gain_profile": str(health.get("gain_profile", "")),
+            "limit_profile": str(health.get("limit_profile", "")),
+            "limit_apply_method": str(health.get("limit_apply_method", "")),
             "positions": positions,
         }
     except Exception as e:
@@ -77,7 +95,19 @@ def print_report(gw: dict, rb: dict, sim: dict) -> bool:
     # Gateway
     print("=== Gateway (9100) ===")
     if gw["ok"]:
-        print(f"  OK | sessions={gw['sessions']}")
+        sessions_ok = gw["sessions"] > 0
+        datachannel_ok = gw["open_datachannels"] > 0
+        print(
+            "  sessions: "
+            f"{gw['sessions']} {'OK' if sessions_ok else 'FAIL (no active session)'}"
+        )
+        print(f"  connected peers: {gw['connected_peers']}")
+        print(
+            "  open datachannels: "
+            f"{gw['open_datachannels']} {'OK' if datachannel_ok else 'FAIL (control channel not open)'}"
+        )
+        if not sessions_ok or not datachannel_ok:
+            healthy = False
     else:
         print(f"  FAIL | {gw['error']}")
         healthy = False
@@ -87,11 +117,17 @@ def print_report(gw: dict, rb: dict, sim: dict) -> bool:
     if rb["ok"]:
         mode_ok = rb["control_mode"] == "rl_policy"
         fsm_ok = rb["fsm_state"] == "MLP"
-        print(f"  control_mode: {rb['control_mode']} {'OK' if mode_ok else 'WARN (not rl_policy)'}")
-        print(f"  rl_fsm_state: {rb['fsm_state']} {'OK' if fsm_ok else 'WAIT (not MLP)'}")
-        print(f"  publish_count: {rb['publish_count']}")
-        print(f"  non-zero targets: {rb['non_zero_targets']}/{rb['total_targets']}")
-        if not mode_ok:
+        publish_ok = rb["publish_count"] > 0
+        targets_ok = rb["total_targets"] > 0 and rb["non_zero_targets"] > 0
+        print(f"  control_mode: {rb['control_mode']} {'OK' if mode_ok else 'FAIL (not rl_policy)'}")
+        print(f"  rl_fsm_state: {rb['fsm_state']} {'OK' if fsm_ok else 'FAIL (not MLP)'}")
+        print(f"  publish_count: {rb['publish_count']} {'OK' if publish_ok else 'FAIL (no joint targets published)'}")
+        print(
+            "  non-zero targets: "
+            f"{rb['non_zero_targets']}/{rb['total_targets']} "
+            f"{'OK' if targets_ok else 'FAIL (targets missing or all zero)'}"
+        )
+        if not mode_ok or not fsm_ok or not publish_ok or not targets_ok:
             healthy = False
     else:
         print(f"  FAIL | {rb['error']}")
@@ -101,9 +137,26 @@ def print_report(gw: dict, rb: dict, sim: dict) -> bool:
     print("\n=== Isaac Sim (9200) ===")
     if sim["ok"]:
         joints_ok = sim["joints"] > 0
-        print(f"  joints: {sim['joints']} {'OK' if joints_ok else 'WARN (0)'}")
-        print(f"  non-zero positions: {sim['non_zero_positions']}/{sim['positions_count']}")
-        if not joints_ok:
+        positions_ok = sim["positions_count"] == sim["joints"] and sim["non_zero_positions"] > 0
+        gain_ok = sim["gain_profile"] in {"policy_config", "official_lite"}
+        limit_ok = sim["limit_profile"] == "official_lite"
+        print(f"  joints: {sim['joints']} {'OK' if joints_ok else 'FAIL (0)'}")
+        print(
+            "  non-zero positions: "
+            f"{sim['non_zero_positions']}/{sim['positions_count']} "
+            f"{'OK' if positions_ok else 'FAIL (joint state cache is empty or all zero)'}"
+        )
+        print(
+            "  gain_profile: "
+            f"{sim['gain_profile']} {'OK' if gain_ok else 'FAIL (expected policy_config or official_lite)'}"
+        )
+        print(
+            "  limit_profile: "
+            f"{sim['limit_profile']} {'OK' if limit_ok else 'FAIL (expected official_lite)'}"
+        )
+        if sim["limit_apply_method"]:
+            print(f"  limit_apply_method: {sim['limit_apply_method']}")
+        if not joints_ok or not positions_ok or not gain_ok or not limit_ok:
             healthy = False
     else:
         print(f"  FAIL | {sim['error']}")

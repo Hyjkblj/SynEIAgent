@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway_lite.config import GatewayConfig, RosBridgeConfig
-from gateway_lite.ros_client import MockRosBridgeClient
+from gateway_lite.ros_client import HttpRosBridgeClient, MockRosBridgeClient
 from gateway_lite.server import GatewayServer
 
 
@@ -21,14 +21,14 @@ from gateway_lite.server import GatewayServer
 def test_mock_move_returns_true_ok():
     """MockRosBridgeClient.move() must return (True, 'ok')."""
     client = MockRosBridgeClient()
-    result = asyncio.get_event_loop().run_until_complete(client.move(0.3, 0.5))
+    result = asyncio.run(client.move(0.3, 0.5))
     assert result == (True, "ok")
 
 
 def test_mock_stop_returns_true_ok():
     """MockRosBridgeClient.stop() must return (True, 'ok')."""
     client = MockRosBridgeClient()
-    result = asyncio.get_event_loop().run_until_complete(client.stop())
+    result = asyncio.run(client.stop())
     assert result == (True, "ok")
 
 
@@ -62,7 +62,7 @@ def test_mock_mode_does_not_call_httpx_post():
     """In mock mode, calling move() must NOT trigger httpx.AsyncClient.post."""
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         client = MockRosBridgeClient()
-        asyncio.get_event_loop().run_until_complete(client.move(0.1, 0.2))
+        asyncio.run(client.move(0.1, 0.2))
         mock_post.assert_not_called()
 
 
@@ -70,5 +70,34 @@ def test_mock_mode_stop_does_not_call_httpx_post():
     """In mock mode, calling stop() must NOT trigger httpx.AsyncClient.post."""
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         client = MockRosBridgeClient()
-        asyncio.get_event_loop().run_until_complete(client.stop())
+        asyncio.run(client.stop())
         mock_post.assert_not_called()
+
+
+def test_http_ros_client_disables_env_routing_for_loopback_calls():
+    """HTTP mode must bypass ambient env/proxy routing for local bridge calls."""
+
+    created_kwargs = {}
+
+    class _Resp:
+        status_code = 200
+
+    class _DummyClient:
+        def __init__(self, *args, **kwargs):
+            created_kwargs.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            return _Resp()
+
+    with patch("gateway_lite.ros_client.httpx.AsyncClient", _DummyClient):
+        client = HttpRosBridgeClient(base_url="http://127.0.0.1:8080", timeout_s=0.8)
+        result = asyncio.run(client.move(0.1, 0.2))
+
+    assert result == (True, "ok")
+    assert created_kwargs["trust_env"] is False

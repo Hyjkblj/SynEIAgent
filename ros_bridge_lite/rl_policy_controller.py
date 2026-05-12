@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .fsm_states import FSMStateName, RobotData, RobotFSM, XboxFlag
-from .motor_id_map import CAN_ID_TO_INDEX, INDEX_TO_CAN_ID, INDEX_TO_NAME, JOINT_NAMES
+from .fsm_states import FSMStateName, RobotData, RobotFSM, StateStop, XboxFlag
+from .motor_id_map import CAN_ID_TO_INDEX, INDEX_TO_CAN_ID, JOINT_NAMES, NAME_TO_INDEX
 from .policy_config import PolicyConfig
 from .sp_transform import SPTransformBase, create_sp_transform
 
@@ -38,6 +38,8 @@ class RLPolicyController:
         self._target_x_vel = 0.0
         self._target_y_vel = 0.0
         self._target_yaw_vel = 0.0
+        self._transition_request_until = 0.0
+        self._pending_gait_transition = False
 
         # --- OpenVINO model ---
         self._infer_request = None
@@ -47,9 +49,29 @@ class RLPolicyController:
 
         # --- Serial-parallel transform ---
         self._sp_transform: SPTransformBase = create_sp_transform(cfg.simulation)
+        self._joint_pos_lower = np.array(cfg.joint_pos_lower, dtype=np.float64)
+        self._joint_pos_upper = np.array(cfg.joint_pos_upper, dtype=np.float64)
+        self._selective_clamp_indices = self._resolve_joint_indices(
+            cfg.clamp_joint_target_names
+        )
+        self._selective_upper_only_clamp_indices = self._resolve_joint_indices(
+            cfg.clamp_joint_target_upper_only_names
+        )
+        self._selective_upper_only_clamp_margin_rad = max(
+            0.0, float(cfg.clamp_joint_target_upper_only_margin_rad)
+        )
+        self._selective_upper_only_clamp_delay_s = max(
+            0.0, float(cfg.clamp_joint_target_upper_only_delay_s)
+        )
+        self._slew_limit_indices = self._resolve_joint_indices(
+            cfg.slew_joint_target_names
+        )
+        self._slew_limit_rate_rad_s = max(0.0, float(cfg.slew_joint_target_rate_rad_s))
+        self._last_output_targets = np.array(cfg.default_dof_pos, dtype=np.float64)
 
         # --- FSM ---
         self._robot_fsm = RobotFSM(cfg, self._robot_data, self._infer_request, self._input_tensor)
+        self._prime_stop_hold_pose()
 
         # --- ROS2 publishers (skipped when node is None, i.e. HTTP mode) ---
         self._cmd_motor_ctrl_type = None
@@ -67,6 +89,22 @@ class RLPolicyController:
 
         print(f"[RLPolicyController] Initialized (simulation={cfg.simulation}, "
               f"model={'loaded' if self._infer_request else 'none'})")
+
+    def _prime_stop_hold_pose(self) -> None:
+        """Seed STOP with the nominal stand pose before live feedback arrives.
+
+        In HTTP simulation mode, the FSM boots before the first Isaac feedback
+        sample is injected. Without this seed, STOP latches an all-zero pose
+        and relies on Isaac's startup hold to keep the robot standing.
+        """
+        stop_state = self._robot_fsm._states.get(FSMStateName.STOP)
+        if not isinstance(stop_state, StateStop):
+            return
+        self._robot_data.q_d[:] = self.cfg.default_dof_pos_np
+        self._last_output_targets[:] = self.cfg.default_dof_pos_np
+        stop_state.request_hold_pose(self.cfg.default_dof_pos_np)
+        if self._robot_fsm.current_state == FSMStateName.STOP:
+            stop_state.on_enter()
 
     def _load_model(self) -> None:
         import openvino as ov
@@ -188,15 +226,51 @@ class RLPolicyController:
         self._target_y_vel = 0.0
         self._target_yaw_vel = float(angular_z) * -0.4
 
+    def request_gait_transition(self, hold_s: float) -> None:
+        """Latch a short-lived gait request so ZERO has time to reach MLP safely."""
+        self._pending_gait_transition = True
+        self._transition_request_until = time.monotonic() + max(0.0, float(hold_s))
+
+    def clear_gait_transition_request(self) -> None:
+        self._pending_gait_transition = False
+        self._transition_request_until = 0.0
+
+    def _has_gait_transition_request(self) -> bool:
+        return time.monotonic() < self._transition_request_until
+
     def stand_pose(self) -> dict[str, float]:
         """Return 20-joint default standing pose."""
         return {name: float(self.cfg.default_dof_pos[i]) for i, name in enumerate(JOINT_NAMES)}
 
-    def update(self, dt: float) -> dict[str, float]:
-        """Run one FSM tick and return 20-joint targets.
+    def force_stop_hold(self) -> None:
+        """Force the FSM back to STOP with the nominal standing pose latched.
 
-        Called from bridge's _joint_control_loop at 50Hz.
+        This is used by the HTTP bridge when Isaac Sim feedback is unavailable
+        during startup/restart, so we do not keep streaming stale MLP targets
+        into a robot that has not re-primed its articulation yet.
         """
+        self.clear_gait_transition_request()
+        self._target_x_vel = 0.0
+        self._target_y_vel = 0.0
+        self._target_yaw_vel = 0.0
+
+        stop_state = self._robot_fsm._states.get(FSMStateName.STOP)
+        if not isinstance(stop_state, StateStop):
+            return
+        stop_state.request_hold_pose(self.cfg.default_dof_pos_np)
+        self._robot_fsm._current_name = FSMStateName.STOP
+        self._robot_fsm._current_state = stop_state
+        self._robot_fsm._current_state.on_enter()
+        self._last_output_targets[:] = self.cfg.default_dof_pos_np
+
+    def update(self, dt: float) -> dict[str, float]:
+        """Advance the RL FSM and refresh policy output at the official 50 Hz cadence."""
+        step_dt = max(1e-4, float(dt))
+        control_dt = max(1e-4, float(self.cfg.control_dt))
+        substeps = max(1, int(round(step_dt / control_dt)))
+        substeps = min(max(1, int(self.cfg.max_control_substeps)), substeps)
+        substep_dt = step_dt / float(substeps)
+
         # Update feedback into robot_data
         with self._lock:
             self._robot_data.q_a[:] = self._feedback_pos
@@ -204,16 +278,18 @@ class RLPolicyController:
             self._robot_data.tau_a[:] = self._feedback_tor
             self._robot_data.imu_data[:] = self._feedback_imu
 
-        # Build flag
         flag = XboxFlag(
             fsm_state_command=self._get_fsm_command(),
             x_speed_command=self._target_x_vel,
             y_speed_command=self._target_y_vel,
             yaw_speed_command=self._target_yaw_vel,
         )
-
-        # Run FSM
-        self._robot_fsm.run(flag)
+        self._robot_fsm.set_step_dt(substep_dt)
+        for _ in range(substeps):
+            self._robot_fsm.run(flag)
+        if self._robot_fsm.current_state == FSMStateName.MLP:
+            self._pending_gait_transition = False
+            self._transition_request_until = 0.0
 
         # Get desired joint positions
         q_d = self._robot_data.q_d.copy()
@@ -221,6 +297,31 @@ class RLPolicyController:
         # Apply SP transform on ankle joints (if real robot)
         if not self.cfg.simulation:
             q_d = self._apply_sp_inverse(q_d)
+        elif self.cfg.clamp_joint_targets:
+            q_d = np.clip(q_d, self._joint_pos_lower, self._joint_pos_upper)
+        elif self._selective_clamp_indices.size > 0:
+            q_d = q_d.copy()
+            q_d[self._selective_clamp_indices] = np.clip(
+                q_d[self._selective_clamp_indices],
+                self._joint_pos_lower[self._selective_clamp_indices],
+                self._joint_pos_upper[self._selective_clamp_indices],
+            )
+        if self._selective_upper_only_clamp_indices.size > 0:
+            q_d = q_d.copy()
+            indices = self._selective_upper_only_clamp_indices
+            upper = self._joint_pos_upper[indices]
+            should_apply = (
+                self._current_mlp_elapsed_s() >= self._selective_upper_only_clamp_delay_s
+            )
+            if should_apply:
+                overflow = q_d[indices] - upper
+                clamp_mask = overflow > self._selective_upper_only_clamp_margin_rad
+                if np.any(clamp_mask):
+                    limited = q_d[indices].copy()
+                    limited[clamp_mask] = upper[clamp_mask]
+                    q_d[indices] = limited
+        q_d = self._apply_selective_slew_limits(q_d, step_dt)
+        self._last_output_targets[:] = q_d
 
         # Publish CmdMotorCtrl
         self._publish_motor_commands(q_d)
@@ -228,19 +329,77 @@ class RLPolicyController:
         # Return as dict
         return {JOINT_NAMES[i]: float(q_d[i]) for i in range(20)}
 
+    def _resolve_joint_indices(self, joint_names: list[str]) -> NDArray[np.int64]:
+        indices: list[int] = []
+        unknown: list[str] = []
+        for name in joint_names:
+            idx = NAME_TO_INDEX.get(str(name).strip(), -1)
+            if idx < 0:
+                unknown.append(str(name))
+                continue
+            indices.append(idx)
+        if unknown:
+            print(f"[RLPolicyController] Ignoring unknown configured joints: {unknown}")
+        if not indices:
+            return np.array([], dtype=np.int64)
+        return np.array(sorted(set(indices)), dtype=np.int64)
+
+    def _current_mlp_elapsed_s(self) -> float:
+        if self._robot_fsm.current_state != FSMStateName.MLP:
+            return 0.0
+        try:
+            return max(0.0, float(self._robot_fsm._current_state.timer))
+        except Exception:
+            return 0.0
+
+    def debug_snapshot(self) -> dict[str, Any]:
+        return {
+            "fsm_state": self._robot_fsm.current_state.name,
+            "policy_command": {
+                "x_vel": float(self._target_x_vel),
+                "y_vel": float(self._target_y_vel),
+                "yaw_vel": float(self._target_yaw_vel),
+            },
+            "post_controller_targets": {
+                JOINT_NAMES[i]: float(self._last_output_targets[i]) for i in range(20)
+            },
+            "fsm_debug": self._robot_fsm.debug_snapshot(),
+        }
+
+    def _apply_selective_slew_limits(
+        self,
+        q_d: NDArray[np.float64],
+        dt: float,
+    ) -> NDArray[np.float64]:
+        if self._slew_limit_indices.size == 0 or self._slew_limit_rate_rad_s <= 1e-9:
+            return q_d
+        q_d = q_d.copy()
+        max_delta = self._slew_limit_rate_rad_s * max(1e-4, float(dt))
+        deltas = q_d[self._slew_limit_indices] - self._last_output_targets[self._slew_limit_indices]
+        q_d[self._slew_limit_indices] = (
+            self._last_output_targets[self._slew_limit_indices]
+            + np.clip(deltas, -max_delta, max_delta)
+        )
+        return q_d
+
     def _get_fsm_command(self) -> str:
         """Determine FSM command based on current state and command activity."""
         current = self._robot_fsm.current_state
-        has_command = (abs(self._target_x_vel) > 0.01 or abs(self._target_yaw_vel) > 0.01)
+        has_velocity_command = (abs(self._target_x_vel) > 0.01 or abs(self._target_yaw_vel) > 0.01)
+        has_transition_request = (
+            has_velocity_command
+            or self._pending_gait_transition
+            or self._has_gait_transition_request()
+        )
 
         if current == FSMStateName.STOP:
-            if has_command:
+            if has_transition_request:
                 return "gotoZero"
             return ""
         elif current == FSMStateName.ZERO:
-            if has_command:
+            if has_transition_request:
                 return "gotoMLP"
-            return "gotoStop" if not has_command else ""
+            return ""
         elif current == FSMStateName.MLP:
             return ""
         return ""

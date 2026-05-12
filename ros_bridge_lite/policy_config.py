@@ -15,10 +15,14 @@ class PolicyConfig:
     model_bin_path: str = ""
 
     # Control timing
-    dt: float = 0.02  # 50Hz bridge loop (C++ uses 0.0025 at 400Hz with freq_ratio=8)
+    dt: float = 0.02  # Effective policy refresh interval (0.0025 s * freq_ratio)
+    control_dt: float = 0.0025  # Official FSM/control step at 400Hz
+    freq_ratio: int = 8
+    max_control_substeps: int = 32
     motor_num: int = 20
     action_num: int = 20
     action_scales: float = 0.25
+    mlp_entry_blend_s: float = 0.0
 
     # Default DOF position (Mujoco order, 20 joints)
     default_dof_pos: list[float] = field(default_factory=lambda: [
@@ -64,6 +68,25 @@ class PolicyConfig:
         3.0, 1.5, 1.0, 1.0,
         3.0, 1.5, 1.0, 1.0,
     ])
+    clamp_joint_targets: bool = False
+    clamp_joint_target_names: list[str] = field(default_factory=list)
+    clamp_joint_target_upper_only_names: list[str] = field(default_factory=list)
+    clamp_joint_target_upper_only_margin_rad: float = 0.0
+    clamp_joint_target_upper_only_delay_s: float = 0.0
+    slew_joint_target_names: list[str] = field(default_factory=list)
+    slew_joint_target_rate_rad_s: float = 0.0
+    joint_pos_lower: list[float] = field(default_factory=lambda: [
+        -0.79, -2.79, -1.04, 0.0, -1.22, -0.4363,
+        -0.79, -2.79, -1.04, 0.0, -1.22, -0.4363,
+        -2.96, -0.2618, -2.96, -2.61,
+        -2.96, -3.4, -2.96, -2.61,
+    ])
+    joint_pos_upper: list[float] = field(default_factory=lambda: [
+        0.79, 2.09, 1.04, 2.39, 0.5236, 0.4363,
+        0.79, 2.09, 1.04, 2.39, 0.5236, 0.4363,
+        2.96, 3.4, 2.96, 0.261,
+        2.96, 0.2618, 2.96, 0.261,
+    ])
 
     # Zero position offset (all zeros for Lite)
     zero_pos_offset: list[float] = field(default_factory=lambda: [0.0] * 20)
@@ -96,19 +119,78 @@ class PolicyConfig:
             cfg.motor_num = int(data["motor_num"])
         if "actions_size" in data:
             cfg.action_num = int(data["actions_size"])
-        if "dt" in data:
-            # C++ dt is 0.0025 (400Hz), we use 0.02 (50Hz)
-            # Only override if explicitly set to a different value
-            pass
+        if "freq_ratio" in data:
+            cfg.freq_ratio = max(1, int(data["freq_ratio"]))
+        if "max_control_substeps" in data:
+            cfg.max_control_substeps = max(1, int(data["max_control_substeps"]))
+        if "control_dt" in data:
+            cfg.control_dt = max(1e-4, float(data["control_dt"]))
+        elif "dt" in data:
+            cfg.control_dt = max(1e-4, float(data["dt"]))
+        cfg.dt = cfg.control_dt * max(1, cfg.freq_ratio)
         if "zero_pos_offset" in data:
             cfg.zero_pos_offset = [float(x) for x in data["zero_pos_offset"][:20]]
         if "joint_kp_p" in data:
             cfg.joint_kp_p = [float(x) for x in data["joint_kp_p"][:20]]
         if "joint_kd_p" in data:
             cfg.joint_kd_p = [float(x) for x in data["joint_kd_p"][:20]]
+        if "clamp_joint_targets" in data:
+            cfg.clamp_joint_targets = bool(data["clamp_joint_targets"])
+        if "clamp_joint_target_names" in data:
+            raw_names = data["clamp_joint_target_names"]
+            if isinstance(raw_names, str):
+                raw_names = [part.strip() for part in raw_names.split(",")]
+            if isinstance(raw_names, list):
+                cfg.clamp_joint_target_names = [
+                    str(name).strip() for name in raw_names if str(name).strip()
+                ]
+        if "clamp_joint_target_upper_only_names" in data:
+            raw_names = data["clamp_joint_target_upper_only_names"]
+            if isinstance(raw_names, str):
+                raw_names = [part.strip() for part in raw_names.split(",")]
+            if isinstance(raw_names, list):
+                cfg.clamp_joint_target_upper_only_names = [
+                    str(name).strip() for name in raw_names if str(name).strip()
+                ]
+        if "clamp_joint_target_upper_only_margin_rad" in data:
+            cfg.clamp_joint_target_upper_only_margin_rad = max(
+                0.0, float(data["clamp_joint_target_upper_only_margin_rad"])
+            )
+        if "clamp_joint_target_upper_only_delay_s" in data:
+            cfg.clamp_joint_target_upper_only_delay_s = max(
+                0.0, float(data["clamp_joint_target_upper_only_delay_s"])
+            )
+        if "slew_joint_target_names" in data:
+            raw_names = data["slew_joint_target_names"]
+            if isinstance(raw_names, str):
+                raw_names = [part.strip() for part in raw_names.split(",")]
+            if isinstance(raw_names, list):
+                cfg.slew_joint_target_names = [
+                    str(name).strip() for name in raw_names if str(name).strip()
+                ]
+        if "slew_joint_target_rate_rad_s" in data:
+            cfg.slew_joint_target_rate_rad_s = max(
+                0.0, float(data["slew_joint_target_rate_rad_s"])
+            )
+        if "mlp_entry_blend_s" in data:
+            cfg.mlp_entry_blend_s = max(0.0, float(data["mlp_entry_blend_s"]))
         return cfg
 
     @property
     def default_dof_pos_np(self) -> Any:
         import numpy as np
         return np.array(self.default_dof_pos, dtype=np.float32)
+
+    @property
+    def policy_dt(self) -> float:
+        return self.control_dt * max(1, self.freq_ratio)
+
+    @property
+    def joint_pos_lower_np(self) -> Any:
+        import numpy as np
+        return np.array(self.joint_pos_lower, dtype=np.float32)
+
+    @property
+    def joint_pos_upper_np(self) -> Any:
+        import numpy as np
+        return np.array(self.joint_pos_upper, dtype=np.float32)

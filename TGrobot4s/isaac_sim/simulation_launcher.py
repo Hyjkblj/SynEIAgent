@@ -170,6 +170,7 @@ class IsaacSimSimulation:
             
             if success:
                 print(f"[Simulation] Robot imported at: {prim_path}")
+                self.config.robot_prim_path = str(prim_path)
                 
                 # 创建 Articulation
                 try:

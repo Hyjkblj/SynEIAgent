@@ -1,0 +1,17 @@
+name: syn-ei-http-rl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - aiohttp==3.13.3
+      - aiortc==1.14.0
+      - cryptography==44.0.0
+      - httpx==0.27.2
+      - numpy>=1.26,<3
+      - openvino==2026.1.0
+      - Pillow>=10,<12
+      - PyYAML>=6.0
+      - pyOpenSSL==25.0.0
