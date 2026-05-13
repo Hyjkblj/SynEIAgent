@@ -22,6 +22,50 @@ DEFAULT_GAIT_JOINT_NAMES = (
     "ankle_pitch_r_joint",
 )
 
+REMOTE_JOY_AXIS_COUNT = 12
+REMOTE_JOY_BUTTON_COUNT = 12
+REMOTE_JOY_YAW_AXIS = 0
+REMOTE_JOY_FORWARD_AXIS = 2
+REMOTE_JOY_G_AXIS = 5
+REMOTE_JOY_A_AXIS = 8
+REMOTE_JOY_C_AXIS = 10
+REMOTE_JOY_D_AXIS = 11
+
+
+def _canonical_fsm_command(raw: str) -> str:
+    value = str(raw).strip()
+    if not value:
+        return ""
+    mapping = {
+        "gotozero": "gotoZero",
+        "gotomlp": "gotoMLP",
+        "gotostop": "gotoStop",
+    }
+    return mapping.get(value.lower(), value)
+
+
+def _remote_joy_axes(linear: float, angular: float) -> list[float]:
+    axes = [0.0] * REMOTE_JOY_AXIS_COUNT
+    axes[REMOTE_JOY_YAW_AXIS] = float(angular)
+    axes[REMOTE_JOY_FORWARD_AXIS] = float(linear)
+    return axes
+
+
+def _fsm_joy_axes(cmd: str) -> list[float] | None:
+    axes = [0.0] * REMOTE_JOY_AXIS_COUNT
+    canonical = _canonical_fsm_command(cmd)
+    if canonical == "gotoZero":
+        axes[REMOTE_JOY_D_AXIS] = 1.0
+        return axes
+    if canonical == "gotoStop":
+        axes[REMOTE_JOY_C_AXIS] = 1.0
+        return axes
+    if canonical == "gotoMLP":
+        axes[REMOTE_JOY_A_AXIS] = 1.0
+        axes[REMOTE_JOY_G_AXIS] = 0.0
+        return axes
+    return None
+
 
 @dataclass(slots=True)
 class BridgeConfig:
@@ -29,9 +73,10 @@ class BridgeConfig:
     port: int = 8080
     cmd_vel_topic: str = "/cmd_vel"
     joint_command_topic: str = "/joint_command"
+    sbus_data_topic: str = "/sbus_data"
     node_name: str = "gateway_lite_bridge"
     set_motion_service: str = "/set_motion_number"
-    control_mode: str = "cmd_vel"  # cmd_vel | joint_gait | rl_policy
+    control_mode: str = "cmd_vel"  # cmd_vel | joint_gait | rl_policy | tienkung_remote_joy
     control_hz: float = 50.0
     command_timeout_ms: int = 350
     stop_ramp_time_ms: int = 260
@@ -242,6 +287,8 @@ class Ros2BridgeRuntime:
         self._motion_srv_type: Any = None
         self._cmd_pub: Any = None
         self._joint_pub: Any = None
+        self._joy_type: Any = None
+        self._joy_pub: Any = None
         self._motion_client: Any = None
         self._gait_controller: GaitController | None = None
         self._control_task: asyncio.Task | None = None
@@ -272,6 +319,11 @@ class Ros2BridgeRuntime:
         self._joint_publish_count = 0
         self._last_joint_targets: dict[str, float] = {}
         self._last_joint_publish_time = 0.0
+        self._joy_publish_count = 0
+        self._last_joy_axes = [0.0] * REMOTE_JOY_AXIS_COUNT
+        self._last_joy_buttons = [0] * REMOTE_JOY_BUTTON_COUNT
+        self._last_joy_publish_time = 0.0
+        self._last_fsm_command = ""
         self._http_latest_targets: dict[str, float] = {}
         self._http_latest_target_time = 0.0
         self._http_feedback_attempt_count = 0
@@ -310,6 +362,11 @@ class Ros2BridgeRuntime:
                         joint_names=cfg.gait_joint_names,
                     )
                 )
+            elif cfg.control_mode == "tienkung_remote_joy":
+                from sensor_msgs.msg import Joy  # type: ignore
+
+                self._joy_type = Joy
+                self._joy_pub = self._node.create_publisher(Joy, cfg.sbus_data_topic, 100)
             elif cfg.control_mode == "rl_policy":
                 from .policy_config import PolicyConfig as _PC
                 from .rl_policy_controller import RLPolicyController as _RLC
@@ -317,6 +374,8 @@ class Ros2BridgeRuntime:
                 policy_cfg.model_xml_path = cfg.policy_model_xml
                 policy_cfg.model_bin_path = cfg.policy_model_bin
                 policy_cfg.simulation = cfg.simulation
+                policy_cfg.sp_lib_path = cfg.sp_lib_path
+                policy_cfg.enable_sim_sp_transform = bool(cfg.sp_lib_path and cfg.simulation)
 
                 if cfg.isaac_sim_url:
                     # HTTP feedback mode: no ROS2 topics needed for RL controller
@@ -376,6 +435,8 @@ class Ros2BridgeRuntime:
         policy_cfg.model_xml_path = self.cfg.policy_model_xml
         policy_cfg.model_bin_path = self.cfg.policy_model_bin
         policy_cfg.simulation = self.cfg.simulation
+        policy_cfg.sp_lib_path = self.cfg.sp_lib_path
+        policy_cfg.enable_sim_sp_transform = bool(self.cfg.sp_lib_path and self.cfg.simulation)
         self._rl_controller = _RLC(policy_cfg, None)
         self._isaac_feedback = IsaacSimFeedbackAdapter(self.cfg.isaac_sim_url)
         print(f"[RL] HTTP feedback mode (ROS2 bypass): {self.cfg.isaac_sim_url}")
@@ -383,6 +444,13 @@ class Ros2BridgeRuntime:
     def move(self, linear: float, angular: float) -> tuple[bool, str]:
         if not self.enabled:
             return False, f"ros_disabled:{self.error}"
+
+        if self.cfg.control_mode == "tienkung_remote_joy":
+            self._target_linear = float(linear)
+            self._target_angular = float(angular)
+            self._last_move_command_time = time.time()
+            self._move_timeout_active = False
+            return self._publish_joy(_remote_joy_axes(linear, angular))
 
         if self.cfg.control_mode == "joint_gait":
             self._target_linear = float(linear)
@@ -420,6 +488,12 @@ class Ros2BridgeRuntime:
             return False, str(e)
 
     def stop(self) -> tuple[bool, str]:
+        if self.cfg.control_mode == "tienkung_remote_joy":
+            self._target_linear = 0.0
+            self._target_angular = 0.0
+            self._last_move_command_time = time.time()
+            self._move_timeout_active = False
+            return self._publish_joy(_remote_joy_axes(0.0, 0.0))
         if self.cfg.control_mode in ("joint_gait", "rl_policy"):
             self._target_linear = 0.0
             self._target_angular = 0.0
@@ -429,6 +503,17 @@ class Ros2BridgeRuntime:
                 self._rl_controller.clear_gait_transition_request()
             return True, "ok"
         return self.move(0.0, 0.0)
+
+    def send_fsm_command(self, cmd: str) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, f"ros_disabled:{self.error}"
+        if self.cfg.control_mode != "tienkung_remote_joy":
+            return False, "not_in_tienkung_mode"
+        canonical = _canonical_fsm_command(cmd)
+        axes = _fsm_joy_axes(canonical)
+        if axes is None:
+            return False, f"unknown_cmd:{cmd}"
+        return self._publish_joy(axes, fsm_cmd=canonical)
 
     def motion(self, number: int, active: bool) -> tuple[bool, str]:
         if not self.enabled:
@@ -508,10 +593,27 @@ class Ros2BridgeRuntime:
         except Exception:
             return 0
 
+    def joy_subscription_count(self) -> int:
+        if not self.enabled or self._joy_pub is None:
+            return 0
+        try:
+            return int(self._joy_pub.get_subscription_count())
+        except Exception:
+            return 0
+
     def active_subscription_count(self) -> int:
+        if self.cfg.control_mode == "tienkung_remote_joy":
+            return self.joy_subscription_count()
         if self.cfg.control_mode in ("joint_gait", "rl_policy"):
             return self.joint_subscription_count()
         return self.cmd_vel_subscription_count()
+
+    def active_command_topic(self) -> str:
+        if self.cfg.control_mode == "tienkung_remote_joy":
+            return self.cfg.sbus_data_topic
+        if self.cfg.control_mode in ("joint_gait", "rl_policy"):
+            return self.cfg.joint_command_topic
+        return self.cfg.cmd_vel_topic
 
     def uses_http_feedback(self) -> bool:
         return self.cfg.control_mode == "rl_policy" and self._isaac_feedback is not None
@@ -573,6 +675,17 @@ class Ros2BridgeRuntime:
             "last_linear": self._last_cmd_vel_linear,
             "last_angular": self._last_cmd_vel_angular,
             "last_age_ms": self._age_ms(self._last_cmd_vel_time),
+        }
+
+    def joy_debug(self) -> dict[str, Any]:
+        return {
+            "topic": self.cfg.sbus_data_topic,
+            "subscription_count": self.joy_subscription_count(),
+            "publish_count": self._joy_publish_count,
+            "last_axes": list(self._last_joy_axes),
+            "last_buttons": list(self._last_joy_buttons),
+            "last_fsm_command": self._last_fsm_command,
+            "last_age_ms": self._age_ms(self._last_joy_publish_time),
         }
 
     def joint_command_debug(self) -> dict[str, Any]:
@@ -832,6 +945,38 @@ class Ros2BridgeRuntime:
         self._last_joint_targets = dict(zip(names, positions, strict=False))
         self._last_joint_publish_time = time.time()
 
+    def _publish_joy(
+        self,
+        axes: list[float],
+        buttons: list[int] | None = None,
+        *,
+        fsm_cmd: str = "",
+    ) -> tuple[bool, str]:
+        if self._joy_pub is None or self._joy_type is None:
+            return False, "joy_unavailable"
+
+        try:
+            msg = self._joy_type()
+            if hasattr(msg, "header") and self._node is not None and hasattr(self._node, "get_clock"):
+                try:
+                    msg.header.stamp = self._node.get_clock().now().to_msg()
+                except Exception:
+                    pass
+            msg.axes = list(axes)
+            msg.buttons = list(buttons if buttons is not None else ([0] * REMOTE_JOY_BUTTON_COUNT))
+            self._joy_pub.publish(msg)
+            self._joy_publish_count += 1
+            self._last_joy_axes = list(msg.axes)
+            self._last_joy_buttons = list(msg.buttons)
+            self._last_joy_publish_time = time.time()
+            if fsm_cmd:
+                self._last_fsm_command = fsm_cmd
+            if self._rclpy is not None and self._node is not None:
+                self._rclpy.spin_once(self._node, timeout_sec=0.0)
+            return True, "ok"
+        except Exception as e:
+            return False, str(e)
+
     def rl_fsm_state(self) -> str:
         if self._rl_controller is not None:
             try:
@@ -854,8 +999,10 @@ async def run_bridge(cfg: BridgeConfig) -> None:
             "ros_error": runtime.error,
             "cmd_vel_topic": cfg.cmd_vel_topic,
             "joint_command_topic": cfg.joint_command_topic,
+            "sbus_data_topic": cfg.sbus_data_topic,
             "cmd_vel_debug": runtime.cmd_vel_debug(),
             "joint_command_debug": runtime.joint_command_debug(),
+            "joy_debug": runtime.joy_debug(),
             "set_motion_service": cfg.set_motion_service,
             "motion_available": runtime._motion_available,
             "motion_error": runtime._motion_error,
@@ -864,8 +1011,7 @@ async def run_bridge(cfg: BridgeConfig) -> None:
             payload["rl_fsm_state"] = runtime.rl_fsm_state()
             payload["simulation"] = cfg.simulation
         if runtime.enabled and runtime.active_subscription_count() == 0 and not runtime.uses_http_feedback():
-            warn_topic = cfg.joint_command_topic if cfg.control_mode in ("joint_gait", "rl_policy") else cfg.cmd_vel_topic
-            payload["warning"] = f"no_subscribers:{warn_topic}"
+            payload["warning"] = f"no_subscribers:{runtime.active_command_topic()}"
         return web.json_response(payload)
 
     async def move(req: web.Request) -> web.Response:
@@ -884,11 +1030,11 @@ async def run_bridge(cfg: BridgeConfig) -> None:
             "angular": angular,
             "linear_x": linear,
             "angular_z": angular,
+            "active_topic": runtime.active_command_topic(),
             "subscription_count": runtime.active_subscription_count(),
         }
         if runtime.enabled and payload["subscription_count"] == 0 and not runtime.uses_http_feedback():
-            warn_topic = cfg.joint_command_topic if cfg.control_mode in ("joint_gait", "rl_policy") else cfg.cmd_vel_topic
-            payload["warning"] = f"no_subscribers:{warn_topic}"
+            payload["warning"] = f"no_subscribers:{runtime.active_command_topic()}"
         return web.json_response(payload)
 
     async def motion(req: web.Request) -> web.Response:
@@ -897,6 +1043,12 @@ async def run_bridge(cfg: BridgeConfig) -> None:
         active = bool(body.get("active", True))
         ok, detail = runtime.motion(number, active)
         return web.json_response({"success": ok, "detail": detail, "number": number, "active": active})
+
+    async def fsm_cmd(req: web.Request) -> web.Response:
+        body = await req.json()
+        cmd = _canonical_fsm_command(str(body.get("cmd", "")))
+        ok, detail = runtime.send_fsm_command(cmd)
+        return web.json_response({"success": ok, "detail": detail, "cmd": cmd})
 
     async def rl_debug(_: web.Request) -> web.Response:
         debug = runtime.rl_debug_snapshot()
@@ -915,6 +1067,7 @@ async def run_bridge(cfg: BridgeConfig) -> None:
     app.router.add_get("/debug/rl", rl_debug)
     app.router.add_post("/move", move)
     app.router.add_post("/motion", motion)
+    app.router.add_post("/fsm_cmd", fsm_cmd)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -944,9 +1097,14 @@ def parse_args() -> BridgeConfig:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--cmd-vel-topic", default="/cmd_vel")
     parser.add_argument("--joint-command-topic", default="/joint_command")
+    parser.add_argument("--sbus-data-topic", default="/sbus_data")
     parser.add_argument("--node-name", default="gateway_lite_bridge")
     parser.add_argument("--set-motion-service", default="/set_motion_number")
-    parser.add_argument("--control-mode", choices=["cmd_vel", "joint_gait", "rl_policy"], default="cmd_vel")
+    parser.add_argument(
+        "--control-mode",
+        choices=["cmd_vel", "joint_gait", "rl_policy", "tienkung_remote_joy"],
+        default="cmd_vel",
+    )
     parser.add_argument("--control-hz", type=float, default=50.0)
     parser.add_argument("--command-timeout-ms", type=int, default=350)
     parser.add_argument("--stop-ramp-time-ms", type=int, default=260)
@@ -976,6 +1134,7 @@ def parse_args() -> BridgeConfig:
         port=args.port,
         cmd_vel_topic=args.cmd_vel_topic,
         joint_command_topic=args.joint_command_topic,
+        sbus_data_topic=args.sbus_data_topic,
         node_name=args.node_name,
         set_motion_service=args.set_motion_service,
         control_mode=str(args.control_mode).strip().lower(),

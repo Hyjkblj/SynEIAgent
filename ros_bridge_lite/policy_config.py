@@ -102,6 +102,8 @@ class PolicyConfig:
 
     # Simulation mode (skip funcSPTrans)
     simulation: bool = True
+    sp_lib_path: str = ""
+    enable_sim_sp_transform: bool = False
 
     # Safety limits
     imu_pitch_limit: float = 0.8

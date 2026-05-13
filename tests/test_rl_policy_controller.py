@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import types
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -260,6 +261,53 @@ def test_controller_update_uses_outer_loop_dt_for_state_timers() -> None:
     assert stop_state.timer == pytest.approx(controller.cfg.dt)
 
 
+def test_simulation_feedback_does_not_apply_sp_transform_by_default() -> None:
+    controller = make_controller()
+    positions = controller.cfg.default_dof_pos_np.astype(np.float64)
+    positions[4] = -0.1
+    velocities = np.zeros(20, dtype=np.float64)
+    efforts = np.zeros(20, dtype=np.float64)
+
+    class _UnexpectedTransform:
+        def forward(self, *_args, **_kwargs):
+            raise AssertionError("forward should not be called in default simulation mode")
+
+        def inverse(self, *_args, **_kwargs):
+            raise AssertionError("inverse should not be called in this test")
+
+    controller._sp_transform = _UnexpectedTransform()
+    controller.set_joint_feedback(positions.tolist(), velocities.tolist(), efforts.tolist())
+
+    assert controller._feedback_pos[4] == pytest.approx(-0.1)
+
+
+def test_simulation_feedback_can_apply_sp_transform_when_enabled() -> None:
+    cfg = PolicyConfig()
+    cfg.enable_sim_sp_transform = True
+    cfg.sp_lib_path = "/tmp/libfuncSPTrans.so"
+
+    class _StubTransform:
+        def forward(self, q_p, qdot_p, tor_p):
+            return q_p + 1.0, qdot_p + 2.0, tor_p + 3.0
+
+        def inverse(self, q_s, qdot_s, tor_s):
+            return q_s, qdot_s, tor_s
+
+    with patch("ros_bridge_lite.rl_policy_controller.create_sp_transform", return_value=_StubTransform()):
+        controller = RLPolicyController(cfg, None)
+    positions = np.array(cfg.default_dof_pos_np, dtype=np.float64)
+    velocities = np.zeros(20, dtype=np.float64)
+    efforts = np.zeros(20, dtype=np.float64)
+    controller.set_joint_feedback(positions.tolist(), velocities.tolist(), efforts.tolist())
+
+    assert controller._feedback_pos[4] == pytest.approx(float(positions[4] + 1.0))
+    assert controller._feedback_pos[5] == pytest.approx(float(positions[5] + 1.0))
+    assert controller._feedback_pos[10] == pytest.approx(float(positions[10] + 1.0))
+    assert controller._feedback_pos[11] == pytest.approx(float(positions[11] + 1.0))
+    assert controller._feedback_vel[4] == pytest.approx(2.0)
+    assert controller._feedback_tor[4] == pytest.approx(3.0)
+
+
 def test_controller_update_splits_outer_loop_into_control_substeps() -> None:
     controller = make_controller()
     controller.set_joint_feedback(controller.cfg.default_dof_pos_np.tolist(), [0.0] * 20, [0.0] * 20)
@@ -446,6 +494,27 @@ def test_policy_config_reads_sim_override_fields_from_yaml(tmp_path: Path) -> No
     assert cfg.mlp_entry_blend_s == pytest.approx(0.35)
     assert cfg.max_control_substeps == 24
     assert cfg.freq_ratio == 10
+
+
+def test_default_http_sim_config_enables_ankle_pitch_guardrails() -> None:
+    cfg_path = (
+        Path(__file__).resolve().parents[1]
+        / "DeployTienkug"
+        / "Deploy_Tienkung"
+        / "rl_control_new"
+        / "config"
+        / "tg22_http_sim.yaml"
+    )
+
+    cfg = PolicyConfig.from_yaml(str(cfg_path))
+
+    assert cfg.clamp_joint_target_names == ["l_ankle_roll", "r_ankle_roll"]
+    assert cfg.clamp_joint_target_upper_only_names == ["l_ankle_pitch", "r_ankle_pitch"]
+    assert cfg.clamp_joint_target_upper_only_margin_rad == pytest.approx(0.05)
+    assert cfg.clamp_joint_target_upper_only_delay_s == pytest.approx(0.0)
+    assert cfg.slew_joint_target_names == ["l_ankle_pitch", "r_ankle_pitch"]
+    assert cfg.slew_joint_target_rate_rad_s == pytest.approx(3.0)
+    assert cfg.mlp_entry_blend_s == pytest.approx(0.35)
 
 
 def test_short_move_request_reaches_mlp_and_stays_there_after_timeout() -> None:

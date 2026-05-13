@@ -48,7 +48,11 @@ class RLPolicyController:
             self._load_model()
 
         # --- Serial-parallel transform ---
-        self._sp_transform: SPTransformBase = create_sp_transform(cfg.simulation)
+        self._sp_transform: SPTransformBase = create_sp_transform(
+            cfg.simulation,
+            cfg.sp_lib_path,
+            allow_simulation_transform=bool(cfg.enable_sim_sp_transform),
+        )
         self._joint_pos_lower = np.array(cfg.joint_pos_lower, dtype=np.float64)
         self._joint_pos_upper = np.array(cfg.joint_pos_upper, dtype=np.float64)
         self._selective_clamp_indices = self._resolve_joint_indices(
@@ -180,15 +184,18 @@ class RLPolicyController:
     def set_joint_feedback(self, positions: list[float], velocities: list[float] | None = None,
                            efforts: list[float] | None = None) -> None:
         """Inject 20-joint feedback directly (bypasses ROS2 subscribers)."""
+        pos = np.array(list(positions[:20]), dtype=np.float64)
+        vel = np.array(list((velocities or [0.0] * 20)[:20]), dtype=np.float64)
+        tor = np.array(list((efforts or [0.0] * 20)[:20]), dtype=np.float64)
+
+        if self._should_apply_sp_feedback_transform():
+            pos, vel, tor = self._apply_sp_forward(pos, vel, tor)
+
         with self._lock:
-            for i in range(min(20, len(positions))):
-                self._feedback_pos[i] = float(positions[i])
-            if velocities:
-                for i in range(min(20, len(velocities))):
-                    self._feedback_vel[i] = float(velocities[i])
-            if efforts:
-                for i in range(min(20, len(efforts))):
-                    self._feedback_tor[i] = float(efforts[i])
+            for i in range(min(20, len(pos))):
+                self._feedback_pos[i] = float(pos[i])
+                self._feedback_vel[i] = float(vel[i])
+                self._feedback_tor[i] = float(tor[i])
 
     def set_imu_feedback(self, yaw: float, pitch: float, roll: float,
                          omega: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -406,19 +413,42 @@ class RLPolicyController:
 
     def _apply_sp_inverse(self, q_d: NDArray[np.float64]) -> NDArray[np.float64]:
         """Apply serial→parallel transform on ankle joints (indices 4,5,10,11)."""
-        # Left ankle (indices 4,5)
-        q_s_left = q_d[4:6].copy()
-        q_p_left, _, _ = self._sp_transform.inverse(
-            q_s_left, np.zeros(2), np.zeros(2))
-        # Right ankle (indices 10,11)
-        q_s_right = q_d[10:12].copy()
-        q_p_right, _, _ = self._sp_transform.inverse(
-            q_s_right, np.zeros(2), np.zeros(2))
+        q_s_ankles = np.concatenate((q_d[4:6].copy(), q_d[10:12].copy()))
+        q_p_ankles, _, _ = self._sp_transform.inverse(
+            q_s_ankles, np.zeros(4, dtype=np.float64), np.zeros(4, dtype=np.float64))
 
         result = q_d.copy()
-        result[4:6] = q_p_left
-        result[10:12] = q_p_right
+        result[4:6] = q_p_ankles[:2]
+        result[10:12] = q_p_ankles[2:4]
         return result
+
+    def _apply_sp_forward(
+        self,
+        q_p: NDArray[np.float64],
+        qdot_p: NDArray[np.float64],
+        tor_p: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """Apply parallel-to-serial transform on ankle joints (indices 4,5,10,11)."""
+        q_s = q_p.copy()
+        qdot_s = qdot_p.copy()
+        tor_s = tor_p.copy()
+
+        q_s_ankles, qdot_s_ankles, tor_s_ankles = self._sp_transform.forward(
+            np.concatenate((q_p[4:6].copy(), q_p[10:12].copy())),
+            np.concatenate((qdot_p[4:6].copy(), qdot_p[10:12].copy())),
+            np.concatenate((tor_p[4:6].copy(), tor_p[10:12].copy())),
+        )
+
+        q_s[4:6] = q_s_ankles[:2]
+        q_s[10:12] = q_s_ankles[2:4]
+        qdot_s[4:6] = qdot_s_ankles[:2]
+        qdot_s[10:12] = qdot_s_ankles[2:4]
+        tor_s[4:6] = tor_s_ankles[:2]
+        tor_s[10:12] = tor_s_ankles[2:4]
+        return q_s, qdot_s, tor_s
+
+    def _should_apply_sp_feedback_transform(self) -> bool:
+        return (not self.cfg.simulation) or bool(self.cfg.enable_sim_sp_transform)
 
     def _publish_motor_commands(self, q_d: NDArray[np.float64]) -> None:
         """Publish CmdMotorCtrl messages to /leg/cmd_ctrl and /arm/cmd_ctrl."""
