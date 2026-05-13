@@ -385,6 +385,18 @@ class TeleopCoordinator(
             is VoiceIntentResult.ResetEmergency -> {
                 messageStore.addSystemMessage("Voice command sent: reset emergency")
             }
+            is VoiceIntentResult.Walk -> {
+                messageStore.addSystemMessage("Voice command sent: walk")
+            }
+            is VoiceIntentResult.Zero -> {
+                messageStore.addSystemMessage("Voice command sent: zero")
+            }
+            is VoiceIntentResult.GaitStop -> {
+                messageStore.addSystemMessage("Voice command sent: gait stop")
+            }
+            is VoiceIntentResult.FsmCmd -> {
+                messageStore.addSystemMessage("Voice command sent: fsm ${result.cmd}")
+            }
             is VoiceIntentResult.QueryBattery -> {
                 replyLocalRobotInfo(query = "battery")
             }

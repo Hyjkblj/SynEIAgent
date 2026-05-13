@@ -24,6 +24,8 @@ ACTION_MAP: dict[str, int] = {
     "dance_2": 5,
 }
 
+WALK_ZERO_TO_MLP_DELAY_MS = 2200
+
 
 @dataclass(slots=True)
 class ControlRouter:
@@ -37,6 +39,8 @@ class ControlRouter:
     last_nonzero_joystick_ms: int = 0
     last_joystick_accept_ms: int = 0
     voice_action_deadline_ms: int = 0
+    pending_fsm_command: str = ""
+    pending_fsm_due_ms: int = 0
 
     def handle(self, raw: dict[str, Any], now_ms: int | None = None) -> RouterOutput:
         now_ms = int(now_ms or time.time() * 1000)
@@ -69,6 +73,18 @@ class ControlRouter:
                         reason="deadman_timeout",
                     )
                 )
+
+        if self.pending_fsm_command and self.pending_fsm_due_ms > 0 and now_ms >= self.pending_fsm_due_ms:
+            out.commands.append(
+                ControlCommand(
+                    kind=CommandKind.FSM_CMD,
+                    source="voice",
+                    fsm_cmd=self.pending_fsm_command,
+                )
+            )
+            self._clear_pending_fsm()
+            if self.state == ControlState.VOICE_ACTION:
+                self._transition(ControlState.IDLE, out)
 
         if self.state == ControlState.VOICE_ACTION and self.voice_action_deadline_ms > 0:
             if now_ms >= self.voice_action_deadline_ms:
@@ -120,6 +136,7 @@ class ControlRouter:
         linear, angular = self.safety.joystick_to_velocity(x=x, y=y)
 
         self.last_joystick_accept_ms = now_ms
+        self._clear_pending_fsm()
 
         if abs(linear) <= 1e-4 and abs(angular) <= 1e-4:
             self.last_nonzero_joystick_ms = 0
@@ -168,7 +185,7 @@ class ControlRouter:
 
         joystick_busy = self.state == ControlState.JOYSTICK_ACTIVE and self.last_nonzero_joystick_ms > 0
         if joystick_busy and (now_ms - self.last_nonzero_joystick_ms) < self.deadman_timeout_ms:
-            if intent not in {"stop", "reset_emergency"}:
+            if intent not in {"stop", "reset_emergency", "gait_stop"}:
                 out.acks.append(
                     ack_payload(seq=seq, request_id=request_id, reason="blocked_by_joystick", source="voice")
                 )
@@ -178,6 +195,7 @@ class ControlRouter:
             self.emergency_latched = True
             self.voice_action_deadline_ms = 0
             self.last_nonzero_joystick_ms = 0
+            self._clear_pending_fsm()
             self._transition(ControlState.EMERGENCY_STOP, out)
             out.commands.append(ControlCommand(kind=CommandKind.STOP, source="voice", reason="emergency_stop"))
             out.acks.append(ack_payload(seq=seq, request_id=request_id, reason="accepted", source="voice"))
@@ -185,7 +203,32 @@ class ControlRouter:
 
         if intent == "reset_emergency":
             self.emergency_latched = False
+            self._clear_pending_fsm()
             self._transition(ControlState.IDLE, out)
+            out.acks.append(ack_payload(seq=seq, request_id=request_id, reason="accepted", source="voice"))
+            return
+
+        if intent == "walk":
+            self.voice_action_deadline_ms = 0
+            self._schedule_pending_fsm("gotoMLP", now_ms + WALK_ZERO_TO_MLP_DELAY_MS)
+            self._transition(ControlState.VOICE_ACTION, out)
+            out.commands.append(
+                ControlCommand(kind=CommandKind.FSM_CMD, source="voice", fsm_cmd="gotoZero")
+            )
+            out.acks.append(ack_payload(seq=seq, request_id=request_id, reason="accepted", source="voice"))
+            return
+
+        if intent in {"zero", "gait_stop", "fsm_cmd"}:
+            fsm_cmd = _fsm_command_from_voice(raw, intent)
+            if not fsm_cmd:
+                out.errors.append("unknown_fsm_cmd")
+                return
+            self.voice_action_deadline_ms = 0
+            self._clear_pending_fsm()
+            self._transition(ControlState.VOICE_ACTION, out)
+            out.commands.append(
+                ControlCommand(kind=CommandKind.FSM_CMD, source="voice", fsm_cmd=fsm_cmd)
+            )
             out.acks.append(ack_payload(seq=seq, request_id=request_id, reason="accepted", source="voice"))
             return
 
@@ -193,6 +236,7 @@ class ControlRouter:
             linear = self.safety.clamp_linear(float(raw.get("linear", 0.0)))
             angular = self.safety.clamp_angular(float(raw.get("angular", 0.0)))
             duration_ms = self.safety.clamp_voice_duration(raw.get("duration_ms"))
+            self._clear_pending_fsm()
             self.voice_action_deadline_ms = now_ms + duration_ms
             self._transition(ControlState.VOICE_ACTION, out)
             out.commands.append(
@@ -213,6 +257,7 @@ class ControlRouter:
                 out.errors.append("unknown action_id")
                 return
             self.voice_action_deadline_ms = 0
+            self._clear_pending_fsm()
             self._transition(ControlState.VOICE_ACTION, out)
             out.commands.append(
                 ControlCommand(
@@ -233,6 +278,14 @@ class ControlRouter:
         old = self.state
         self.state = new_state
         out.events.append(event_payload("state_changed", old_state=old.value, state=new_state.value))
+
+    def _schedule_pending_fsm(self, cmd: str, due_ms: int) -> None:
+        self.pending_fsm_command = str(cmd)
+        self.pending_fsm_due_ms = int(due_ms)
+
+    def _clear_pending_fsm(self) -> None:
+        self.pending_fsm_command = ""
+        self.pending_fsm_due_ms = 0
 
 
 def _to_int(v: Any) -> int | None:
@@ -265,6 +318,12 @@ def _resolve_voice_intent(raw: dict[str, Any]) -> str:
         text = str(raw.get("content", "")).strip().lower()
         if not text:
             return ""
+        if any(k in text for k in ("停步", "停止步态", "gait stop", "stop gait")):
+            return "gait_stop"
+        if any(k in text for k in ("归零", "回零", "zero pose", "gotozero", "goto zero")):
+            return "zero"
+        if any(k in text for k in ("走路", "行走", "walk", "开始走", "开始行走")):
+            return "walk"
         if any(k in text for k in ("停", "stop", "停止", "急停")):
             return "stop"
         if any(k in text for k in ("挥手", "wave")):
@@ -308,3 +367,19 @@ def _motion_number_from_action(raw: dict[str, Any]) -> int | None:
     if action_id in ACTION_MAP:
         return ACTION_MAP[action_id]
     return None
+
+
+def _fsm_command_from_voice(raw: dict[str, Any], intent: str) -> str:
+    if intent == "zero":
+        return "gotoZero"
+    if intent == "gait_stop":
+        return "gotoStop"
+    if intent == "fsm_cmd":
+        value = str(raw.get("fsm_cmd", raw.get("cmd", ""))).strip().lower()
+        mapping = {
+            "gotozero": "gotoZero",
+            "gotomlp": "gotoMLP",
+            "gotostop": "gotoStop",
+        }
+        return mapping.get(value, "")
+    return ""

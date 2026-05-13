@@ -53,13 +53,45 @@ def _make_geometry_msgs_mock() -> types.ModuleType:
     return geo_mod, geo_msg_mod
 
 
+def _make_sensor_msgs_mock() -> tuple[types.ModuleType, types.ModuleType]:
+    """Build a minimal sensor_msgs mock."""
+    sensor_mod = types.ModuleType("sensor_msgs")
+    sensor_msg_mod = types.ModuleType("sensor_msgs.msg")
+
+    class _Header:
+        def __init__(self) -> None:
+            self.stamp = None
+
+    class _JointState:
+        def __init__(self) -> None:
+            self.header = _Header()
+            self.name = []
+            self.position = []
+            self.velocity = []
+            self.effort = []
+
+    class _Joy:
+        def __init__(self) -> None:
+            self.header = _Header()
+            self.axes = []
+            self.buttons = []
+
+    sensor_msg_mod.JointState = _JointState
+    sensor_msg_mod.Joy = _Joy
+    sensor_mod.msg = sensor_msg_mod
+    return sensor_mod, sensor_msg_mod
+
+
 # Install mocks into sys.modules before any import of ros_bridge_lite
 _rclpy_mock = _make_rclpy_mock()
 _geo_mod, _geo_msg_mod = _make_geometry_msgs_mock()
+_sensor_mod, _sensor_msg_mod = _make_sensor_msgs_mock()
 
 sys.modules["rclpy"] = _rclpy_mock
 sys.modules["geometry_msgs"] = _geo_mod
 sys.modules["geometry_msgs.msg"] = _geo_msg_mod
+sys.modules["sensor_msgs"] = _sensor_mod
+sys.modules["sensor_msgs.msg"] = _sensor_msg_mod
 
 # Also mock hric_msgs so the optional import doesn't fail in unexpected ways
 _hric_mod = types.ModuleType("hric_msgs")
@@ -81,6 +113,8 @@ def _install_ros_bridge_mocks() -> None:
     sys.modules["rclpy"] = _rclpy_mock
     sys.modules["geometry_msgs"] = _geo_mod
     sys.modules["geometry_msgs.msg"] = _geo_msg_mod
+    sys.modules["sensor_msgs"] = _sensor_mod
+    sys.modules["sensor_msgs.msg"] = _sensor_msg_mod
     sys.modules["hric_msgs"] = _hric_mod
     sys.modules["hric_msgs.srv"] = _hric_srv_mod
 
@@ -120,8 +154,12 @@ def _make_runtime(
         _rclpy_mock.create_node = MagicMock(return_value=mock_node)
 
         rt = Ros2BridgeRuntime(cfg)
-        # Patch the publisher directly in case create_node path differs
-        rt._cmd_pub = mock_pub
+        if control_mode == "tienkung_remote_joy":
+            rt._joy_pub = mock_pub
+        elif control_mode in {"joint_gait", "rl_policy"} and not isaac_sim_url:
+            rt._joint_pub = mock_pub
+        else:
+            rt._cmd_pub = mock_pub
     return rt
 
 
@@ -755,6 +793,65 @@ def test_rl_policy_http_publish_holds_nominal_pose_until_feedback_is_ready() -> 
 # Requirements: 1.3, 1.5, 5.3, 7.3, 8.1, 8.2
 # ---------------------------------------------------------------------------
 
+def test_tienkung_remote_joy_move_publishes_official_axis_mapping() -> None:
+    rt, published = _make_enabled_remote_joy_runtime()
+
+    ok, detail = rt.move(0.45, -0.3)
+
+    assert (ok, detail) == (True, "ok")
+    assert len(published) == 1
+    msg = published[0]
+    assert len(msg.axes) == 12
+    assert msg.axes[0] == pytest.approx(-0.3)
+    assert msg.axes[2] == pytest.approx(0.45)
+    assert msg.axes[1] == pytest.approx(0.0)
+    assert msg.axes[3] == pytest.approx(0.0)
+    assert msg.buttons == [0] * 12
+
+
+def test_tienkung_remote_joy_stop_publishes_zero_axes() -> None:
+    rt, published = _make_enabled_remote_joy_runtime()
+
+    ok, detail = rt.stop()
+
+    assert (ok, detail) == (True, "ok")
+    assert len(published) == 1
+    msg = published[0]
+    assert msg.axes == pytest.approx([0.0] * 12)
+    assert msg.buttons == [0] * 12
+
+
+@pytest.mark.parametrize(
+    ("cmd", "axis_index"),
+    [
+        ("gotoZero", 11),
+        ("gotoStop", 10),
+        ("gotoMLP", 8),
+    ],
+)
+def test_tienkung_remote_joy_send_fsm_command_publishes_expected_axis(cmd: str, axis_index: int) -> None:
+    rt, published = _make_enabled_remote_joy_runtime()
+
+    ok, detail = rt.send_fsm_command(cmd)
+
+    assert (ok, detail) == (True, "ok")
+    assert len(published) == 1
+    msg = published[0]
+    assert len(msg.axes) == 12
+    assert msg.axes[axis_index] == pytest.approx(1.0)
+    assert sum(abs(v) > 1e-9 for v in msg.axes) == 1
+    assert msg.buttons == [0] * 12
+    assert rt.joy_debug()["last_fsm_command"] == cmd
+
+
+def test_tienkung_remote_joy_active_subscription_count_uses_joy_publisher() -> None:
+    rt, _ = _make_enabled_remote_joy_runtime(subscription_count=7)
+
+    assert rt.active_subscription_count() == 7
+    assert rt.active_command_topic() == "/sbus_data"
+    assert rt.joy_debug()["subscription_count"] == 7
+
+
 class TestHealthResponseStructure:
     """Verify that cmd_vel_debug() returns the required fields."""
 
@@ -894,6 +991,32 @@ def _make_enabled_runtime() -> tuple["Ros2BridgeRuntime", list]:
 
     rt = Ros2BridgeRuntime(cfg)
     rt._cmd_pub = mock_pub
+    assert rt.enabled, "Expected runtime to be enabled"
+    return rt, published
+
+
+def _make_enabled_remote_joy_runtime(
+    subscription_count: int = 0,
+) -> tuple["Ros2BridgeRuntime", list]:
+    """Return an enabled remote-joy runtime with a capturing Joy publisher."""
+    _install_ros_bridge_mocks()
+    cfg = BridgeConfig(control_mode="tienkung_remote_joy", sbus_data_topic="/sbus_data")
+    published: list = []
+
+    mock_node = MagicMock()
+    mock_pub = MagicMock()
+    mock_pub.get_subscription_count.return_value = subscription_count
+
+    def _capture_publish(msg):
+        published.append(msg)
+
+    mock_pub.publish.side_effect = _capture_publish
+    mock_node.create_publisher.return_value = mock_pub
+    _rclpy_mock.ok.return_value = True
+    _rclpy_mock.create_node = MagicMock(return_value=mock_node)
+
+    rt = Ros2BridgeRuntime(cfg)
+    rt._joy_pub = mock_pub
     assert rt.enabled, "Expected runtime to be enabled"
     return rt, published
 

@@ -27,6 +27,11 @@ def make_bridge(
     publish_count: int = 10,
     non_zero_targets: int = 8,
     total_targets: int = 20,
+    joy_publish_count: int = 0,
+    non_zero_axes: int = 0,
+    total_axes: int = 0,
+    active_topic: str = "/sbus_data",
+    last_fsm_command: str = "",
 ) -> dict:
     return {
         "ok": True,
@@ -35,6 +40,11 @@ def make_bridge(
         "publish_count": publish_count,
         "non_zero_targets": non_zero_targets,
         "total_targets": total_targets,
+        "joy_publish_count": joy_publish_count,
+        "non_zero_axes": non_zero_axes,
+        "total_axes": total_axes,
+        "active_topic": active_topic,
+        "last_fsm_command": last_fsm_command,
     }
 
 
@@ -101,3 +111,33 @@ def test_print_report_accepts_strictly_healthy_pipeline() -> None:
         make_sim(),
     )
     assert healthy is True
+
+
+def test_print_report_accepts_healthy_remote_joy_pipeline() -> None:
+    healthy = MODULE.print_report(
+        make_gateway(),
+        make_bridge(
+            control_mode="tienkung_remote_joy",
+            joy_publish_count=12,
+            non_zero_axes=2,
+            total_axes=12,
+            last_fsm_command="gotoMLP",
+        ),
+        make_sim(),
+    )
+    assert healthy is True
+
+
+def test_print_report_rejects_remote_joy_without_traffic() -> None:
+    healthy = MODULE.print_report(
+        make_gateway(),
+        make_bridge(
+            control_mode="tienkung_remote_joy",
+            joy_publish_count=0,
+            non_zero_axes=0,
+            total_axes=12,
+            last_fsm_command="",
+        ),
+        make_sim(),
+    )
+    assert healthy is False

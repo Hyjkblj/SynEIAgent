@@ -7,5 +7,6 @@ data class VoiceIntentPayload(
     val durationMs: Int? = null,
     val actionId: String? = null,
     val motionNumber: Int? = null,
+    val fsmCmd: String? = null,
     val requestId: String? = null,
 )

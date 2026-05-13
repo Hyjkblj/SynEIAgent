@@ -11,9 +11,12 @@ if not defined CONDA_ENVS_DIR if defined DEFAULT_CONDA_ENVS_DIR set "CONDA_ENVS_
 if not defined CONDA_ENVS_DIR set "CONDA_ENVS_DIR=%CONDA_BASE%\envs"
 if not defined HTTP_RL_ENV_NAME set "HTTP_RL_ENV_NAME=syn-ei-http-rl"
 if not defined HTTP_RL_PYTHON set "HTTP_RL_PYTHON=%CONDA_ENVS_DIR%\%HTTP_RL_ENV_NAME%\python.exe"
-if not defined ROS2_ROOT set "ROS2_ROOT=D:\Develop\ros2-jazzy-20260128-windows-release-amd64\ros2-windows"
-if not defined ROS2_PYTHON set "ROS2_PYTHON=C:\pixi_ws\.pixi\envs\default\python.exe"
+if not defined ROS2_ROOT set "ROS2_ROOT=C:\pixi_ws\ros2-windows"
+if not defined ROS2_ENV_ROOT set "ROS2_ENV_ROOT=C:\pixi_ws\.pixi\envs\default"
+if not defined ROS2_PYTHON set "ROS2_PYTHON=%ROS2_ENV_ROOT%\python.exe"
+if not defined COLCON_PYTHON_EXECUTABLE set "COLCON_PYTHON_EXECUTABLE=%ROS2_PYTHON%"
 set "ROS2_SETUP_BAT=%ROS2_ROOT%\setup.bat"
+set "ROS2_BASELINE_PATH=%ROS2_ENV_ROOT%;%ROS2_ENV_ROOT%\Library\mingw-w64\bin;%ROS2_ENV_ROOT%\Library\usr\bin;%ROS2_ENV_ROOT%\Library\bin;%ROS2_ENV_ROOT%\Scripts;%ROS2_ENV_ROOT%\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
 
 echo ===== Recommended Runtime Split =====
 echo [INFO] 9200 Isaac Sim should keep using its own kit/python runtime.
@@ -44,6 +47,12 @@ if not exist "%ROS2_PYTHON%" (
 call "%ROS2_SETUP_BAT%"
 if errorlevel 1 (
     echo [WARN] Failed to load ROS2 env from: %ROS2_ROOT%
+    goto :done
+)
+set "PATH=%ROS2_BASELINE_PATH%"
+call "%ROS2_SETUP_BAT%"
+if errorlevel 1 (
+    echo [WARN] Failed to reload sanitized ROS2 env from: %ROS2_ROOT%
     goto :done
 )
 "%ROS2_PYTHON%" -c "import aiohttp, rclpy" >nul 2>nul

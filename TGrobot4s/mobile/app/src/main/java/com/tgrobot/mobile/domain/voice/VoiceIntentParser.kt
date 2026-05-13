@@ -19,12 +19,29 @@ class VoiceIntentParser(
             return VoiceIntentCommand.QueryStatus
         }
 
-        if (STOP_KEYWORDS.any { text.contains(it) }) {
-            return VoiceIntentCommand.Stop
-        }
-
         if (RESET_EMERGENCY_KEYWORDS.any { text.contains(it) }) {
             return VoiceIntentCommand.ResetEmergency
+        }
+        if (WALK_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.Walk
+        }
+        if (ZERO_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.Zero
+        }
+        if (GAIT_STOP_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.GaitStop
+        }
+        if (GOTO_MLP_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.FsmCmd(cmd = "gotoMLP")
+        }
+        if (GOTO_ZERO_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.FsmCmd(cmd = "gotoZero")
+        }
+        if (GOTO_STOP_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.FsmCmd(cmd = "gotoStop")
+        }
+        if (STOP_KEYWORDS.any { text.contains(it) }) {
+            return VoiceIntentCommand.Stop
         }
 
         if (FORWARD_KEYWORDS.any { text.contains(it) }) {
@@ -56,6 +73,12 @@ class VoiceIntentParser(
     private companion object {
         val STOP_KEYWORDS = setOf("停止", "停下", "急停", "stop")
         val RESET_EMERGENCY_KEYWORDS = setOf("解除急停", "恢复控制", "reset emergency")
+        val WALK_KEYWORDS = setOf("走路", "行走", "开始走", "开始行走", "walk")
+        val ZERO_KEYWORDS = setOf("归零", "回零", "zero pose")
+        val GAIT_STOP_KEYWORDS = setOf("停步", "停止步态", "gait stop", "stop gait")
+        val GOTO_MLP_KEYWORDS = setOf("gotomlp", "goto mlp", "进入步态", "进入行走")
+        val GOTO_ZERO_KEYWORDS = setOf("gotozero", "goto zero", "进入归零")
+        val GOTO_STOP_KEYWORDS = setOf("gotostop", "goto stop", "进入停止")
         val FORWARD_KEYWORDS = setOf("前进", "往前", "向前", "forward")
         val BACKWARD_KEYWORDS = setOf("后退", "往后", "向后", "back")
         val LEFT_KEYWORDS = setOf("左转", "向左", "left")

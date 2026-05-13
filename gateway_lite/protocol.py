@@ -9,6 +9,7 @@ class CommandKind(str, Enum):
     MOVE = "move"
     STOP = "stop"
     MOTION = "motion"
+    FSM_CMD = "fsm_cmd"
 
 
 @dataclass(slots=True)
@@ -19,6 +20,7 @@ class ControlCommand:
     angular: float = 0.0
     duration_ms: int = 0
     motion_number: int = 0
+    fsm_cmd: str = ""
     active: bool = True
     reason: str = ""
 

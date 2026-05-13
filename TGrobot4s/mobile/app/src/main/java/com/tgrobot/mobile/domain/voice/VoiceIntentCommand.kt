@@ -16,6 +16,14 @@ sealed interface VoiceIntentCommand {
 
     data object ResetEmergency : VoiceIntentCommand
 
+    data object Walk : VoiceIntentCommand
+
+    data object Zero : VoiceIntentCommand
+
+    data object GaitStop : VoiceIntentCommand
+
+    data class FsmCmd(val cmd: String) : VoiceIntentCommand
+
     data object QueryBattery : VoiceIntentCommand
 
     data object QueryConfig : VoiceIntentCommand
