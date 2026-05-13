@@ -2566,20 +2566,23 @@ def run_standalone_control(
             articulation_prim_path = _resolve_articulation_root_prim_path(str(prim_path))
             controller._articulation_prim_path = str(articulation_prim_path)
         controller.set_world(world)
+        world.reset()
 
         if success:
+            # Warm the referenced stage before creating the articulation handle.
+            # Adding a freshly referenced USD articulation into the scene before
+            # physics is ready can trip Isaac Sim 5.1 tensor internals on
+            # headless Linux.
+            for _ in range(3):
+                world.step(render=False)
             try:
                 robot = ArticulationClass(prim_path=articulation_prim_path, name="robot")
-                if hasattr(world, "scene") and hasattr(world.scene, "add"):
-                    world.scene.add(robot)
-                    print(f"[Standalone] Articulation added to scene: {articulation_prim_path}")
+                print(f"[Standalone] Articulation created at prim: {articulation_prim_path}")
             except Exception as e:
                 print(f"[Standalone] Articulation failed: {e}")
                 import traceback
                 traceback.print_exc()
                 robot = None
-
-        world.reset()
 
         # 然后创建 Articulation（需要物理视图已就绪）
         if robot is not None:

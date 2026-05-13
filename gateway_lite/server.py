@@ -455,6 +455,10 @@ class GatewayServer:
             result = await self._ros.motion(motion_number=cmd.motion_number, active=cmd.active)
             print(f"[GW-CMD] motion result: {result}")
             return result
+        if cmd.kind == CommandKind.FSM_CMD:
+            result = await self._ros.fsm_cmd(cmd.fsm_cmd)
+            print(f"[GW-CMD] fsm_cmd result: {result}")
+            return result
         return False, "unsupported_command"
 
     async def _close_session(self, chat_id: str) -> None:

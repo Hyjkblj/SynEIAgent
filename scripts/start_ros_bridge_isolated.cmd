@@ -12,17 +12,21 @@ if not defined CONDA_ENVS_DIR if defined DEFAULT_CONDA_ENVS_DIR set "CONDA_ENVS_
 if not defined CONDA_ENVS_DIR set "CONDA_ENVS_DIR=%CONDA_BASE%\envs"
 if not defined HTTP_RL_ENV_NAME set "HTTP_RL_ENV_NAME=syn-ei-http-rl"
 if not defined HTTP_RL_PYTHON set "HTTP_RL_PYTHON=%CONDA_ENVS_DIR%\%HTTP_RL_ENV_NAME%\python.exe"
-if not defined ROS2_ROOT set "ROS2_ROOT=D:\Develop\ros2-jazzy-20260128-windows-release-amd64\ros2-windows"
-if not defined ROS2_PYTHON set "ROS2_PYTHON=C:\pixi_ws\.pixi\envs\default\python.exe"
+if not defined ROS2_ROOT set "ROS2_ROOT=C:\pixi_ws\ros2-windows"
+if not defined ROS2_ENV_ROOT set "ROS2_ENV_ROOT=C:\pixi_ws\.pixi\envs\default"
+if not defined ROS2_PYTHON set "ROS2_PYTHON=%ROS2_ENV_ROOT%\python.exe"
+if not defined COLCON_PYTHON_EXECUTABLE set "COLCON_PYTHON_EXECUTABLE=%ROS2_PYTHON%"
 if not defined BRIDGE_PYTHON set "BRIDGE_PYTHON=%HTTP_RL_PYTHON%"
 if not defined FORCE_ROS2_HTTP_RL set "FORCE_ROS2_HTTP_RL=0"
 set "ROS2_SETUP_BAT=%ROS2_ROOT%\setup.bat"
+set "ROS2_BASELINE_PATH=%ROS2_ENV_ROOT%;%ROS2_ENV_ROOT%\Library\mingw-w64\bin;%ROS2_ENV_ROOT%\Library\usr\bin;%ROS2_ENV_ROOT%\Library\bin;%ROS2_ENV_ROOT%\Scripts;%ROS2_ENV_ROOT%\bin;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
 
 set "HOST=0.0.0.0"
 set "PORT=8080"
 set "CMD_VEL_TOPIC=/cmd_vel"
 set "JOINT_COMMAND_TOPIC=/joint_command"
-set "CONTROL_MODE=rl_policy"
+set "SBUS_DATA_TOPIC=/sbus_data"
+if not defined CONTROL_MODE set "CONTROL_MODE=rl_policy"
 if not defined CONTROL_HZ set "CONTROL_HZ=400"
 set "NODE_NAME=gateway_lite_bridge"
 set "SET_MOTION_SERVICE=/set_motion_number"
@@ -84,6 +88,12 @@ if errorlevel 1 (
     echo [ERROR] Failed to load ROS2 env from: %ROS2_ROOT%
     exit /b 1
 )
+set "PATH=%ROS2_BASELINE_PATH%"
+call "%ROS2_SETUP_BAT%"
+if errorlevel 1 (
+    echo [ERROR] Failed to reload sanitized ROS2 env from: %ROS2_ROOT%
+    exit /b 1
+)
 
 cd /d "%PROJECT_ROOT%"
 
@@ -106,7 +116,7 @@ if errorlevel 1 (
 echo [INFO] aiohttp+rclpy ok
 
 echo [INFO] Starting ROS Bridge Lite on 8080 (mode=%CONTROL_MODE%)...
-"%ROS2_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE% %RL_ARGS%
+"%ROS2_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --sbus-data-topic %SBUS_DATA_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE% %RL_ARGS%
 exit /b %errorlevel%
 
 :start_http_rl_no_ros2
@@ -134,5 +144,5 @@ if errorlevel 1 (
 )
 echo [INFO] aiohttp+httpx+openvino+yaml+numpy ok
 echo [INFO] Starting ROS Bridge Lite on 8080 via HTTP RL transport...
-"%BRIDGE_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE% %RL_ARGS%
+"%BRIDGE_PYTHON%" -m ros_bridge_lite.main --host %HOST% --port %PORT% --cmd-vel-topic %CMD_VEL_TOPIC% --joint-command-topic %JOINT_COMMAND_TOPIC% --sbus-data-topic %SBUS_DATA_TOPIC% --control-mode %CONTROL_MODE% --control-hz %CONTROL_HZ% --node-name %NODE_NAME% --set-motion-service %SET_MOTION_SERVICE% %RL_ARGS%
 exit /b %errorlevel%

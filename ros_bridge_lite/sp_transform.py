@@ -178,10 +178,26 @@ class CTypesSPTransform(SPTransformBase):
         )
 
 
-def create_sp_transform(simulation: bool, lib_path: str = "") -> SPTransformBase:
-    """Factory: return simulation stub or ctypes wrapper based on platform."""
-    if simulation or platform.machine() != "aarch64":
-        return SimulationSPTransform()
-    if not lib_path:
-        raise ValueError("lib_path required for CTypesSPTransform on aarch64")
-    return CTypesSPTransform(lib_path)
+def create_sp_transform(
+    simulation: bool,
+    lib_path: str = "",
+    *,
+    allow_simulation_transform: bool = False,
+) -> SPTransformBase:
+    """Factory: return simulation stub or ctypes wrapper based on platform.
+
+    When ``allow_simulation_transform`` is enabled we try to reuse the official
+    serial/parallel ankle library even in simulation, as long as the current
+    host can actually load the shared object.
+    """
+    if not simulation:
+        if not lib_path:
+            raise ValueError("lib_path required for CTypesSPTransform when simulation=False")
+        return CTypesSPTransform(lib_path)
+
+    if allow_simulation_transform:
+        if not lib_path:
+            raise ValueError("lib_path required when enable_sim_sp_transform=True")
+        return CTypesSPTransform(lib_path)
+
+    return SimulationSPTransform()

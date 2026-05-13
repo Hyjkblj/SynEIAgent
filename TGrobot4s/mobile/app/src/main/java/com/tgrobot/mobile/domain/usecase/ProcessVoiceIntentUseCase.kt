@@ -5,83 +5,45 @@ import com.tgrobot.mobile.data.RobotClient
 import com.tgrobot.mobile.domain.voice.VoiceIntentCommand
 import com.tgrobot.mobile.domain.voice.VoiceIntentParser
 
-/**
- * 语音意图处理结果
- */
 sealed interface VoiceIntentResult {
-    /**
-     * 移动命令
-     */
     data class Move(
         val linear: Float,
         val angular: Float,
         val durationMs: Int,
     ) : VoiceIntentResult
 
-    /**
-     * 动作命令
-     */
     data class Action(
         val actionId: String,
         val motionNumber: Int,
     ) : VoiceIntentResult
 
-    /**
-     * 停止命令
-     */
     data object Stop : VoiceIntentResult
 
-    /**
-     * 重置紧急停止
-     */
     data object ResetEmergency : VoiceIntentResult
 
-    /**
-     * 查询电池
-     */
+    data object Walk : VoiceIntentResult
+
+    data object Zero : VoiceIntentResult
+
+    data object GaitStop : VoiceIntentResult
+
+    data class FsmCmd(val cmd: String) : VoiceIntentResult
+
     data object QueryBattery : VoiceIntentResult
 
-    /**
-     * 查询配置
-     */
     data object QueryConfig : VoiceIntentResult
 
-    /**
-     * 查询状态
-     */
     data object QueryStatus : VoiceIntentResult
 
-    /**
-     * 未知命令（作为文本发送）
-     */
     data class Unknown(val text: String) : VoiceIntentResult
 
-    /**
-     * 发送失败
-     */
     data class Failed(val message: String) : VoiceIntentResult
 }
 
-/**
- * 处理语音意图用例
- * 
- * 封装语音意图解析和发送的业务逻辑。
- * 
- * 职责：
- * - 解析语音文本为意图
- * - 构建并发送意图载荷
- * - 返回处理结果
- */
 class ProcessVoiceIntentUseCase(
     private val robotClient: RobotClient,
     private val voiceIntentParser: VoiceIntentParser,
 ) {
-    /**
-     * 处理语音文本
-     * 
-     * @param text 语音文本
-     * @return 处理结果
-     */
     suspend operator fun invoke(text: String): VoiceIntentResult {
         val intent = voiceIntentParser.parse(text)
 
@@ -138,6 +100,42 @@ class ProcessVoiceIntentUseCase(
                 }
             }
 
+            VoiceIntentCommand.Walk -> {
+                val payload = VoiceIntentPayload(intent = "walk")
+                if (robotClient.sendVoiceIntent(payload)) {
+                    VoiceIntentResult.Walk
+                } else {
+                    VoiceIntentResult.Failed("Voice command send failed: walk")
+                }
+            }
+
+            VoiceIntentCommand.Zero -> {
+                val payload = VoiceIntentPayload(intent = "zero")
+                if (robotClient.sendVoiceIntent(payload)) {
+                    VoiceIntentResult.Zero
+                } else {
+                    VoiceIntentResult.Failed("Voice command send failed: zero")
+                }
+            }
+
+            VoiceIntentCommand.GaitStop -> {
+                val payload = VoiceIntentPayload(intent = "gait_stop")
+                if (robotClient.sendVoiceIntent(payload)) {
+                    VoiceIntentResult.GaitStop
+                } else {
+                    VoiceIntentResult.Failed("Voice command send failed: gait_stop")
+                }
+            }
+
+            is VoiceIntentCommand.FsmCmd -> {
+                val payload = VoiceIntentPayload(intent = "fsm_cmd", fsmCmd = intent.cmd)
+                if (robotClient.sendVoiceIntent(payload)) {
+                    VoiceIntentResult.FsmCmd(intent.cmd)
+                } else {
+                    VoiceIntentResult.Failed("Voice command send failed: fsm_cmd")
+                }
+            }
+
             VoiceIntentCommand.QueryBattery -> VoiceIntentResult.QueryBattery
 
             VoiceIntentCommand.QueryConfig -> VoiceIntentResult.QueryConfig
@@ -154,17 +152,15 @@ class ProcessVoiceIntentUseCase(
         }
     }
 
-    /**
-     * 获取语音独占窗口时长
-     * 
-     * @param result 语音意图结果
-     * @return 独占窗口时长（毫秒）
-     */
     fun getVoiceExclusiveWindowMs(result: VoiceIntentResult): Long {
         return when (result) {
             is VoiceIntentResult.Move -> result.durationMs.toLong() + VOICE_WINDOW_PADDING_MS
             is VoiceIntentResult.Action -> VOICE_ACTION_WINDOW_MS
             is VoiceIntentResult.Stop -> VOICE_STOP_WINDOW_MS
+            is VoiceIntentResult.Walk -> VOICE_ACTION_WINDOW_MS
+            is VoiceIntentResult.Zero -> VOICE_ACTION_WINDOW_MS
+            is VoiceIntentResult.GaitStop -> VOICE_STOP_WINDOW_MS
+            is VoiceIntentResult.FsmCmd -> VOICE_ACTION_WINDOW_MS
             else -> 0L
         }
     }

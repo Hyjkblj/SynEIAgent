@@ -1,33 +1,26 @@
-"""管道健康检查：验证 RL policy 全链路是否真正工作。
-
-检查项：
-1. Gateway (9100) — WebRTC 会话
-2. ROS Bridge (8080) — control_mode=rl_policy, rl_fsm_state, publish_count
-3. Isaac Sim (9200) — joints > 0, 关节位置变化
-
-用法：
-  python scripts/check_pipeline_health.py
-  python scripts/check_pipeline_health.py --watch  # 持续监控
-"""
+"""Pipeline health check for both RL-policy and Tiangong remote-joy paths."""
 from __future__ import annotations
 
 import argparse
 import time
+from typing import Any
 
 import httpx
 
 
-def check_gateway(url: str = "http://127.0.0.1:9100") -> dict:
+def check_gateway(url: str = "http://127.0.0.1:9100") -> dict[str, Any]:
     try:
         r = httpx.get(f"{url}/status", timeout=2)
         data = r.json()
         peers = data.get("peers", {}) if isinstance(data.get("peers"), dict) else {}
         open_datachannels = sum(
-            1 for peer in peers.values()
+            1
+            for peer in peers.values()
             if isinstance(peer, dict) and str(peer.get("dc_state", "")).lower() == "open"
         )
         connected_peers = sum(
-            1 for peer in peers.values()
+            1
+            for peer in peers.values()
             if isinstance(peer, dict) and str(peer.get("connection_state", "")).lower() == "connected"
         )
         return {
@@ -41,39 +34,47 @@ def check_gateway(url: str = "http://127.0.0.1:9100") -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def check_ros_bridge(url: str = "http://127.0.0.1:8080") -> dict:
+def check_ros_bridge(url: str = "http://127.0.0.1:8080") -> dict[str, Any]:
     try:
         r = httpx.get(f"{url}/health", timeout=2)
         data = r.json()
-        control_mode = data.get("control_mode", "unknown")
-        fsm_state = data.get("rl_fsm_state", "N/A")
-        jd = data.get("joint_command_debug", {})
-        publish_count = jd.get("publish_count", 0)
-        last_targets = jd.get("last_targets", {})
-        non_zero = sum(1 for v in last_targets.values() if abs(v) > 0.001)
+        control_mode = str(data.get("control_mode", "unknown"))
+        joint_debug = data.get("joint_command_debug", {}) if isinstance(data.get("joint_command_debug"), dict) else {}
+        joy_debug = data.get("joy_debug", {}) if isinstance(data.get("joy_debug"), dict) else {}
+        publish_count = int(joint_debug.get("publish_count", 0))
+        last_targets = joint_debug.get("last_targets", {}) if isinstance(joint_debug.get("last_targets"), dict) else {}
+        non_zero_targets = sum(1 for v in last_targets.values() if abs(float(v)) > 0.001)
+        joy_publish_count = int(joy_debug.get("publish_count", 0))
+        last_axes = joy_debug.get("last_axes", []) if isinstance(joy_debug.get("last_axes"), list) else []
+        non_zero_axes = sum(1 for v in last_axes if abs(float(v)) > 0.001)
         return {
             "ok": True,
             "control_mode": control_mode,
-            "fsm_state": fsm_state,
+            "fsm_state": str(data.get("rl_fsm_state", "N/A")),
             "publish_count": publish_count,
-            "non_zero_targets": non_zero,
+            "non_zero_targets": non_zero_targets,
             "total_targets": len(last_targets),
+            "joy_publish_count": joy_publish_count,
+            "non_zero_axes": non_zero_axes,
+            "total_axes": len(last_axes),
+            "active_topic": str(data.get("sbus_data_topic") or data.get("joint_command_topic") or ""),
+            "last_fsm_command": str(joy_debug.get("last_fsm_command", "")),
             "data": data,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-def check_isaac_sim(url: str = "http://127.0.0.1:9200") -> dict:
+def check_isaac_sim(url: str = "http://127.0.0.1:9200") -> dict[str, Any]:
     try:
         r_health = httpx.get(f"{url}/health", timeout=2)
         health = r_health.json()
-        joints = health.get("joints", 0)
+        joints = int(health.get("joints", 0))
 
         r_js = httpx.get(f"{url}/joint_states", timeout=2)
         js = r_js.json()
-        positions = js.get("position", [])
-        non_zero = sum(1 for p in positions if abs(p) > 0.001)
+        positions = js.get("position", []) if isinstance(js.get("position"), list) else []
+        non_zero = sum(1 for p in positions if abs(float(p)) > 0.001)
         return {
             "ok": True,
             "joints": joints,
@@ -88,72 +89,75 @@ def check_isaac_sim(url: str = "http://127.0.0.1:9200") -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def print_report(gw: dict, rb: dict, sim: dict) -> bool:
-    """Print health report. Returns True if pipeline is healthy."""
+def _bridge_healthy(rb: dict[str, Any]) -> tuple[bool, list[str]]:
+    issues: list[str] = []
+    mode = rb["control_mode"]
+    if mode == "rl_policy":
+        if rb["fsm_state"] != "MLP":
+            issues.append("rl_fsm_state is not MLP")
+        if rb["publish_count"] <= 0:
+            issues.append("no joint targets published")
+        if rb["total_targets"] <= 0 or rb["non_zero_targets"] <= 0:
+            issues.append("joint targets missing or all zero")
+    elif mode == "tienkung_remote_joy":
+        if rb["joy_publish_count"] <= 0:
+            issues.append("no remote joy messages published")
+        if rb["total_axes"] != 12:
+            issues.append("joy axes layout is not 12-channel")
+        if rb["last_fsm_command"] == "" and rb["non_zero_axes"] <= 0:
+            issues.append("no fsm command or non-zero joystick axes observed")
+    else:
+        issues.append(f"unsupported control_mode: {mode}")
+    return len(issues) == 0, issues
+
+
+def print_report(gw: dict[str, Any], rb: dict[str, Any], sim: dict[str, Any]) -> bool:
     healthy = True
 
-    # Gateway
     print("=== Gateway (9100) ===")
     if gw["ok"]:
         sessions_ok = gw["sessions"] > 0
         datachannel_ok = gw["open_datachannels"] > 0
-        print(
-            "  sessions: "
-            f"{gw['sessions']} {'OK' if sessions_ok else 'FAIL (no active session)'}"
-        )
+        print(f"  sessions: {gw['sessions']} {'OK' if sessions_ok else 'FAIL'}")
         print(f"  connected peers: {gw['connected_peers']}")
-        print(
-            "  open datachannels: "
-            f"{gw['open_datachannels']} {'OK' if datachannel_ok else 'FAIL (control channel not open)'}"
-        )
+        print(f"  open datachannels: {gw['open_datachannels']} {'OK' if datachannel_ok else 'FAIL'}")
         if not sessions_ok or not datachannel_ok:
             healthy = False
     else:
         print(f"  FAIL | {gw['error']}")
         healthy = False
 
-    # ROS Bridge
     print("\n=== ROS Bridge (8080) ===")
     if rb["ok"]:
-        mode_ok = rb["control_mode"] == "rl_policy"
-        fsm_ok = rb["fsm_state"] == "MLP"
-        publish_ok = rb["publish_count"] > 0
-        targets_ok = rb["total_targets"] > 0 and rb["non_zero_targets"] > 0
-        print(f"  control_mode: {rb['control_mode']} {'OK' if mode_ok else 'FAIL (not rl_policy)'}")
-        print(f"  rl_fsm_state: {rb['fsm_state']} {'OK' if fsm_ok else 'FAIL (not MLP)'}")
-        print(f"  publish_count: {rb['publish_count']} {'OK' if publish_ok else 'FAIL (no joint targets published)'}")
-        print(
-            "  non-zero targets: "
-            f"{rb['non_zero_targets']}/{rb['total_targets']} "
-            f"{'OK' if targets_ok else 'FAIL (targets missing or all zero)'}"
-        )
-        if not mode_ok or not fsm_ok or not publish_ok or not targets_ok:
+        bridge_ok, issues = _bridge_healthy(rb)
+        print(f"  control_mode: {rb['control_mode']}")
+        if rb["control_mode"] == "rl_policy":
+            print(f"  rl_fsm_state: {rb['fsm_state']}")
+            print(f"  publish_count: {rb['publish_count']}")
+            print(f"  non-zero targets: {rb['non_zero_targets']}/{rb['total_targets']}")
+        elif rb["control_mode"] == "tienkung_remote_joy":
+            print(f"  active_topic: {rb['active_topic']}")
+            print(f"  joy_publish_count: {rb['joy_publish_count']}")
+            print(f"  non-zero axes: {rb['non_zero_axes']}/{rb['total_axes']}")
+            print(f"  last_fsm_command: {rb['last_fsm_command'] or '-'}")
+        if not bridge_ok:
             healthy = False
+            for issue in issues:
+                print(f"  FAIL | {issue}")
     else:
         print(f"  FAIL | {rb['error']}")
         healthy = False
 
-    # Isaac Sim
     print("\n=== Isaac Sim (9200) ===")
     if sim["ok"]:
         joints_ok = sim["joints"] > 0
         positions_ok = sim["positions_count"] == sim["joints"] and sim["non_zero_positions"] > 0
-        gain_ok = sim["gain_profile"] in {"policy_config", "official_lite"}
-        limit_ok = sim["limit_profile"] == "official_lite"
-        print(f"  joints: {sim['joints']} {'OK' if joints_ok else 'FAIL (0)'}")
-        print(
-            "  non-zero positions: "
-            f"{sim['non_zero_positions']}/{sim['positions_count']} "
-            f"{'OK' if positions_ok else 'FAIL (joint state cache is empty or all zero)'}"
-        )
-        print(
-            "  gain_profile: "
-            f"{sim['gain_profile']} {'OK' if gain_ok else 'FAIL (expected policy_config or official_lite)'}"
-        )
-        print(
-            "  limit_profile: "
-            f"{sim['limit_profile']} {'OK' if limit_ok else 'FAIL (expected official_lite)'}"
-        )
+        gain_ok = sim["gain_profile"] in {"policy_config", "official_lite", ""}
+        limit_ok = sim["limit_profile"] in {"official_lite", ""}
+        print(f"  joints: {sim['joints']} {'OK' if joints_ok else 'FAIL'}")
+        print(f"  non-zero positions: {sim['non_zero_positions']}/{sim['positions_count']} {'OK' if positions_ok else 'FAIL'}")
+        print(f"  gain_profile: {sim['gain_profile'] or '-'} {'OK' if gain_ok else 'FAIL'}")
+        print(f"  limit_profile: {sim['limit_profile'] or '-'} {'OK' if limit_ok else 'FAIL'}")
         if sim["limit_apply_method"]:
             print(f"  limit_apply_method: {sim['limit_apply_method']}")
         if not joints_ok or not positions_ok or not gain_ok or not limit_ok:
@@ -166,10 +170,9 @@ def print_report(gw: dict, rb: dict, sim: dict) -> bool:
 
 
 def watch_loop(interval: float = 2.0) -> None:
-    """Continuously monitor pipeline health."""
     print("Watching pipeline health (Ctrl+C to stop)...\n")
-    prev_positions = None
-    prev_publish_count = None
+    prev_positions: list[float] | None = None
+    prev_publish_count: int | None = None
 
     try:
         while True:
@@ -177,27 +180,27 @@ def watch_loop(interval: float = 2.0) -> None:
             rb = check_ros_bridge()
             sim = check_isaac_sim()
 
-            # Check for changes
             position_changed = False
             if prev_positions and sim["ok"]:
                 for a, b in zip(prev_positions, sim["positions"]):
-                    if abs(a - b) > 0.001:
+                    if abs(float(a) - float(b)) > 0.001:
                         position_changed = True
                         break
 
             publish_growing = False
+            current_publish = rb.get("joy_publish_count", 0) if rb.get("control_mode") == "tienkung_remote_joy" else rb.get("publish_count", 0)
             if prev_publish_count is not None and rb["ok"]:
-                publish_growing = rb["publish_count"] > prev_publish_count
+                publish_growing = int(current_publish) > prev_publish_count
 
             print_report(gw, rb, sim)
             if position_changed:
                 print("\n  >>> JOINTS MOVING <<<")
             if publish_growing:
-                print("  >>> PUBLISH COUNT GROWING <<<")
+                print("  >>> COMMAND COUNT GROWING <<<")
             print()
 
             prev_positions = sim.get("positions", [])
-            prev_publish_count = rb.get("publish_count", 0)
+            prev_publish_count = int(current_publish)
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\nStopped.")

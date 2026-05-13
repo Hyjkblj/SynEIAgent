@@ -193,6 +193,7 @@ class WebRtcRobotClient(
         intent.durationMs?.let { payload.put("duration_ms", it) }
         intent.actionId?.takeIf { it.isNotBlank() }?.let { payload.put("action_id", it) }
         intent.motionNumber?.let { payload.put("motion_number", it) }
+        intent.fsmCmd?.takeIf { it.isNotBlank() }?.let { payload.put("fsm_cmd", it) }
         return sendData(payload.toString())
     }
 
