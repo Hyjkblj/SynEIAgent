@@ -118,6 +118,33 @@ class CTypesSPTransform(SPTransformBase):
         # Create instance
         self._obj = self._lib.funcSPTrans_new()
 
+
+def _can_load_ctypes_sp_transform(lib_path: str) -> tuple[bool, str]:
+    import ctypes
+
+    try:
+        lib = ctypes.cdll.LoadLibrary(lib_path)
+    except Exception as exc:
+        return False, f"load_failed:{exc}"
+
+    required_symbols = (
+        "funcSPTrans_new",
+        "funcSPTrans_delete",
+        "setPEst",
+        "calcFK",
+        "getSState",
+        "setSDes",
+        "calcJointPosRef",
+        "calcJointTorDes",
+        "getPDes",
+    )
+    for symbol in required_symbols:
+        try:
+            getattr(lib, symbol)
+        except Exception as exc:
+            return False, f"missing_symbol:{symbol}:{exc}"
+    return True, ""
+
     def _to_ptr(self, arr: NDArray[np.float64]):
         import ctypes
         return (ctypes.c_double * len(arr))(*arr.tolist())
@@ -198,6 +225,12 @@ def create_sp_transform(
     if allow_simulation_transform:
         if not lib_path:
             raise ValueError("lib_path required when enable_sim_sp_transform=True")
-        return CTypesSPTransform(lib_path)
+        ok, reason = _can_load_ctypes_sp_transform(lib_path)
+        if ok:
+            return CTypesSPTransform(lib_path)
+        print(
+            "[SPTransform] Falling back to SimulationSPTransform in simulation mode "
+            f"because official SP library is incompatible: {reason}"
+        )
 
     return SimulationSPTransform()

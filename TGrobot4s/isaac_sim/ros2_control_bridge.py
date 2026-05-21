@@ -1834,11 +1834,12 @@ class IsaacSimRobotController:
     def _maintain_startup_pose(self, now: float) -> bool:
         if not self._startup_hold_active:
             return False
-        neutral_hold = (
-            self._startup_targets_match_nominal_stand()
-            and not self._has_active_velocity_command(now)
-        )
-        if not neutral_hold and now >= self._startup_hold_deadline:
+        # The startup hold is only meant to stabilize the articulation for a
+        # short, bounded window after reset. If we keep extending it whenever
+        # the current joint targets still match the nominal stand pose, a STOP
+        # publisher can pin the robot in the primed pose forever and external
+        # joint commands never get a chance to apply.
+        if now >= self._startup_hold_deadline:
             self._startup_hold_active = False
             return False
         if self._articulation is None or len(self._startup_joint_positions) != len(self._joint_names):
@@ -1983,17 +1984,36 @@ class IsaacSimRobotController:
             self._last_joint_target_apply_method = "prepared"
             self._last_joint_target_apply_error = ""
             if has_any:
-                # Prefer the explicit joint-target APIs when available. In
-                # Isaac Sim these tend to maintain drive targets more
-                # consistently than the generic ArticulationAction path.
-                if hasattr(self._articulation, "set_joint_position_targets"):
-                    self._articulation.set_joint_position_targets(np.expand_dims(targets_physical, axis=0))
-                    self._last_joint_target_apply_method = "articulation.set_joint_position_targets"
-                    return
+                # Isaac Sim 5.1 Linux headless can expose an articulation
+                # wrapper whose set_joint_position_targets path dereferences a
+                # missing internal action buffer. Prefer the controller path
+                # first and only fall back to other APIs if it is unavailable.
+                apply_errors: list[str] = []
                 if ctrl is not None and hasattr(ctrl, "set_joint_position_targets"):
-                    ctrl.set_joint_position_targets(targets_physical)
-                    self._last_joint_target_apply_method = "controller.set_joint_position_targets"
-                    return
+                    try:
+                        ctrl.set_joint_position_targets(targets_physical.copy())
+                        self._last_joint_target_apply_method = "controller.set_joint_position_targets"
+                        return
+                    except Exception as exc:
+                        apply_errors.append(f"controller.set_joint_position_targets: {exc}")
+                if hasattr(self._articulation, "set_joint_position_targets"):
+                    try:
+                        self._articulation.set_joint_position_targets(targets_physical.copy())
+                        self._last_joint_target_apply_method = "articulation.set_joint_position_targets"
+                        return
+                    except Exception as exc:
+                        apply_errors.append(f"articulation.set_joint_position_targets: {exc}")
+                if hasattr(self._articulation, "set_joint_positions"):
+                    try:
+                        # Isaac Sim 5.1 headless can expose a broken
+                        # apply_action/get_applied_actions path. Fall back to
+                        # directly writing joint positions so we can still
+                        # validate command/feedback wiring on Linux.
+                        self._articulation.set_joint_positions(targets_physical.copy())
+                        self._last_joint_target_apply_method = "articulation.set_joint_positions_fallback"
+                        return
+                    except Exception as exc:
+                        apply_errors.append(f"articulation.set_joint_positions: {exc}")
 
                 action = None
                 try:
@@ -2006,14 +2026,25 @@ class IsaacSimRobotController:
 
                 if ArticulationAction is not None:
                     action = ArticulationAction(joint_positions=targets_physical.copy())
-                    if hasattr(self._articulation, "apply_action"):
-                        self._articulation.apply_action(action)
-                        self._last_joint_target_apply_method = "articulation.apply_action"
-                        return
                     if ctrl is not None and hasattr(ctrl, "apply_action"):
-                        ctrl.apply_action(action)
-                        self._last_joint_target_apply_method = "controller.apply_action"
-                        return
+                        try:
+                            ctrl.apply_action(action)
+                            self._last_joint_target_apply_method = "controller.apply_action"
+                            return
+                        except Exception as exc:
+                            apply_errors.append(f"controller.apply_action: {exc}")
+                    if hasattr(self._articulation, "apply_action"):
+                        try:
+                            self._articulation.apply_action(action)
+                            self._last_joint_target_apply_method = "articulation.apply_action"
+                            return
+                        except Exception as exc:
+                            apply_errors.append(f"articulation.apply_action: {exc}")
+                if apply_errors:
+                    self._last_joint_target_apply_method = "error"
+                    self._last_joint_target_apply_error = "; ".join(apply_errors)
+                    print(f"[Control] Error applying joint targets: {self._last_joint_target_apply_error}")
+                    return
                 self._last_joint_target_apply_method = "target_api_unavailable"
             else:
                 self._last_joint_target_apply_method = "ignored:no_matching_joints"
